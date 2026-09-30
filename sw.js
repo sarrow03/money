@@ -1,6 +1,6 @@
 // Офлайн-кэш оболочки приложения. Финансовые данные сюда не попадают (они в IndexedDB).
 // При изменении файлов увеличивайте версию.
-const CACHE = 'money-v8';
+const CACHE = 'money-v9';
 const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

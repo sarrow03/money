@@ -1042,49 +1042,91 @@ const rand = n => crypto.getRandomValues(new Uint8Array(n));
 async function bioAvailable() {
   try { return !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch { return false; }
 }
-async function bioKey(credId, prfSalt) {
-  const a = await navigator.credentials.get({ publicKey: {
-    challenge: rand(32), rpId: location.hostname, userVerification: 'required', timeout: 60000,
-    allowCredentials: [{ type: 'public-key', id: credId }],
-    extensions: { prf: { eval: { first: prfSalt } } },
-  } });
-  const out = a.getClientExtensionResults().prf?.results?.first;
-  if (!out) throw new Error('noprf');
-  return crypto.subtle.importKey('raw', out, 'AES-GCM', false, ['encrypt', 'decrypt']);
+// ВАЖНО: iOS разрешает Face ID только сразу после нажатия — никаких await до вызова credentials.*
+const bioGetOpts = (credId, prfSalt) => ({ publicKey: {
+  challenge: rand(32), rpId: location.hostname, userVerification: 'required', timeout: 60000,
+  allowCredentials: [{ type: 'public-key', id: credId }],
+  extensions: { prf: { eval: { first: prfSalt } } },
+} });
+const prfOut = cred => { const r = cred.getClientExtensionResults().prf; return r && r.results && r.results.first; };
+const bioErr = e => ({
+  NotAllowedError: 'Отменено или истекло время. Попробуйте ещё раз',
+  InvalidStateError: 'Ключ уже есть — удалите «Деньги» в Настройки iPhone → Пароли и повторите',
+  SecurityError: 'Face ID работает только на https-адресе приложения',
+  NotSupportedError: 'Этот iPhone не поддерживает нужный режим (нужна iOS 18+)',
+}[e && e.name] || `Ошибка: ${(e && (e.name || e.message)) || 'неизвестно'}`);
+async function saveBio(credId, prfSalt, out, pw) {
+  const key = await crypto.subtle.importKey('raw', out, 'AES-GCM', false, ['encrypt', 'decrypt']);
+  const iv = rand(12);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(pw)));
+  await kvSet('bio', { credId, prfSalt, iv, ct });
+  BIO = await kvGet('bio');
 }
-async function enableBio() {
-  if (!(await bioAvailable())) return toast('Face ID недоступен на этом устройстве');
-  const pw = prompt('Введите пароль приложения');
-  if (!pw) return;
-  const v = await kvGet('vault');
-  try { await decryptVault(await deriveKey(pw, v.salt, v.iter), v); } catch { return toast('Неверный пароль'); }
-  try {
-    const cred = await navigator.credentials.create({ publicKey: {
-      challenge: rand(32), rp: { name: 'Деньги', id: location.hostname },
-      user: { id: rand(16), name: 'Деньги', displayName: 'Деньги' },
-      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
-      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'required' },
-      extensions: { prf: {} }, timeout: 60000,
-    } });
-    const credId = new Uint8Array(cred.rawId), prfSalt = rand(32);
-    const key = await bioKey(credId, prfSalt);
-    const iv = rand(12);
-    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(pw)));
-    await kvSet('bio', { credId, prfSalt, iv, ct });
-    toast('Face ID включён'); render();
-  } catch (e) {
-    toast(e && e.message === 'noprf' ? 'Нужна iOS 18 или новее' : 'Face ID не включён');
-  }
+// Включение по шагам: каждый запрос Face ID — от отдельного нажатия
+function enableBio() {
+  let pw = null, credId = null;
+  const prfSalt = rand(32);
+  const html = sheetHead('Вход по Face ID') + `
+    <div class="form"><label class="field"><span>Пароль</span><input id="b-pw" type="password" autocomplete="current-password"></label></div>
+    <p class="note" id="b-note">Шаг 1 из 2: введите пароль приложения.</p>
+    <button class="primary" id="b-go">Проверить пароль</button>`;
+  openSheet(html, s => {
+    const go = $('#b-go', s), note = $('#b-note', s);
+    const done = () => { closeSheet(); toast('Face ID включён'); render(); };
+    go.addEventListener('click', async () => {
+      if (!pw) {
+        const v = await kvGet('vault'), val = $('#b-pw', s).value;
+        go.disabled = true;
+        try { await decryptVault(await deriveKey(val, v.salt, v.iter), v); pw = val; }
+        catch { go.disabled = false; return toast('Неверный пароль'); }
+        go.disabled = false;
+        if (!(await bioAvailable())) { closeSheet(); return toast('Face ID недоступен на этом устройстве'); }
+        $('#b-pw', s).closest('.form').hidden = true;
+        note.textContent = 'Шаг 2 из 2: подтвердите Face ID. iPhone предложит сохранить ключ доступа — соглашайтесь.';
+        go.textContent = 'Включить Face ID';
+        return;
+      }
+      if (!credId) {
+        try {
+          const cred = await navigator.credentials.create({ publicKey: {
+            challenge: rand(32), rp: { name: 'Деньги', id: location.hostname },
+            user: { id: rand(16), name: 'Деньги', displayName: 'Деньги' },
+            pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+            authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'required' },
+            extensions: { prf: { eval: { first: prfSalt } } }, timeout: 60000,
+          } });
+          credId = new Uint8Array(cred.rawId);
+          const ext = cred.getClientExtensionResults().prf;
+          if (ext && ext.enabled === false) { closeSheet(); return toast('Нужна iOS 18 или новее'); }
+          const out = prfOut(cred);
+          if (out) { await saveBio(credId, prfSalt, out, pw); return done(); }
+          note.textContent = 'Почти готово: подтвердите Face ID ещё раз.';
+          go.textContent = 'Подтвердить Face ID';
+        } catch (e) { toast(bioErr(e)); }
+        return;
+      }
+      try {
+        const a = await navigator.credentials.get(bioGetOpts(credId, prfSalt));
+        const out = prfOut(a);
+        if (!out) { closeSheet(); return toast('Нужна iOS 18 или новее'); }
+        await saveBio(credId, prfSalt, out, pw); done();
+      } catch (e) { toast(bioErr(e)); }
+    });
+  });
 }
-async function disableBio() { await kvDel('bio'); toast('Face ID выключен'); render(); }
+async function disableBio() { await kvDel('bio'); BIO = null; toast('Face ID выключен'); render(); }
+let BIO = null; // загружается заранее, чтобы Face ID вызывался сразу по нажатию
 async function unlockBio() {
-  const bio = await kvGet('bio');
-  if (!bio) return;
+  if (!BIO) return;
+  const bio = BIO;
   try {
-    const key = await bioKey(bio.credId, bio.prfSalt);
+    const a = await navigator.credentials.get(bioGetOpts(bio.credId, bio.prfSalt));
+    const out = prfOut(a);
+    if (!out) throw new Error('Face ID не вернул ключ');
+    const key = await crypto.subtle.importKey('raw', out, 'AES-GCM', false, ['decrypt']);
     const pw = dec.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bio.iv }, key, bio.ct));
     await unlock(pw);
-  } catch { /* отменено — остаётся ввод пароля */ }
+  } catch (e) { $('#lock-err').textContent = e && e.name === 'NotAllowedError' ? '' : bioErr(e); }
 }
 
 /* ---------- lock / unlock ---------- */
@@ -1099,8 +1141,8 @@ async function showLock() {
   $('#lock-pw').autocomplete = hasVault ? 'current-password' : 'new-password';
   $('#lock-btn').textContent = hasVault ? 'Открыть' : 'Создать';
   $('#lock-pw').value = ''; $('#lock-pw2').value = ''; $('#lock-err').textContent = '';
-  const bio = hasVault && await kvGet('bio');
-  $('#lock-bio').hidden = !bio;
+  BIO = hasVault ? (await kvGet('bio')) || null : null;
+  $('#lock-bio').hidden = !BIO;
 }
 function lock() {
   KEY = null; S = null; SALT = null;
