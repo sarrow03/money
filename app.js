@@ -291,7 +291,7 @@ function viewSettings() {
     <div class="inline-add"><input id="new-cat-income" placeholder="Новая категория"><button data-action="add-cat" data-type="income">Добавить</button></div>
     <p class="note">Нажмите на категорию, чтобы переименовать, × — удалить.</p>
 
-    ${hidden.length ? `<h2>Скрытые счета</h2><div class="list">${hidden.map(a => `<button class="row" data-action="unhide-account" data-id="${a.id}"><div class="main"><div class="title">${esc(a.name)}</div><div class="meta">нажмите, чтобы вернуть</div></div></button>`).join('')}</div>` : ''}
+    ${hidden.length ? `<h2>Скрытые счета</h2><div class="list">${hidden.map(a => `<button class="row" data-action="unhide-account" data-id="${a.id}"><div class="main"><div class="title">${esc(a.name)} ${SYM[a.currency]}</div><div class="meta">нажмите, чтобы вернуть</div></div></button>`).join('')}</div>` : ''}
 
     <h2>Данные</h2>
     <p class="note">Данные хранятся только на этом устройстве, зашифрованы паролем. Резервная копия — зашифрованный файл: сохраняйте её в Файлы → iCloud Drive. Восстановить можно на любом устройстве, зная пароль.${S.lastBackup ? ' Последняя копия: ' + fmtDay(S.lastBackup) + '.' : ''}</p>
@@ -430,41 +430,72 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
   });
 }
 
+// Банк: название + остатки по валютам (€ / ₴ / $). Новая валюта создаётся, когда вписан её остаток.
 function accountSheet(a = null, bank = null) {
   const b = balances();
-  const html = sheetHead(a ? `${esc(a.name)} ${SYM[a.currency]}` : bank ? 'Новая валюта' : 'Новый счёт') + `
+  const orig = a ? a.name : bank || '';
+  const own = c => (orig ? bankAccs(orig).find(x => x.currency === c) : null);
+  const vals = {};
+  CURS.forEach(c => { const x = own(c); vals[c] = x ? String(Math.round(b[x.id] * 100) / 100) : ''; });
+  let sel = a ? a.currency : (CURS.find(c => !own(c)) || 'EUR');
+  const html = sheetHead(orig ? esc(orig) : 'Новый счёт') + `
     <div class="form">
-      <label class="field"><span>Банк</span><input id="a-name" list="bank-list" value="${esc(a ? a.name : bank || '')}" placeholder="Например, Monobank"></label>
+      <label class="field"><span>Банк</span><input id="a-name" list="bank-list" value="${esc(orig)}" placeholder="Например, Monobank"></label>
       <datalist id="bank-list">${bankNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
-      <label class="field"><span>Валюта</span><select id="a-cur" ${a ? 'disabled' : ''}>${CURS.map(c => `<option ${a ? (a.currency === c ? 'selected' : '') : (bank && bankAccs(bank).some(x => x.currency === c) ? 'disabled' : '')}>${c}</option>`).join('')}</select></label>
-      <label class="field"><span>Остаток сейчас</span><input id="a-bal" inputmode="decimal" value="${a ? Math.round(b[a.id] * 100) / 100 : ''}" placeholder="0"></label>
     </div>
-    <p class="note">${a ? 'Изменение остатка — это корректировка, она не попадает в историю. Новое название банка применится ко всем его валютам.' : 'Несколько валют в одном банке: создайте счёт с тем же названием банка и другой валютой.'}</p>
+    <div class="plabel">Валюта</div>
+    <div class="seg" id="a-cur">${CURS.map(c => `<button data-c="${c}">${SYM[c]} ${c}</button>`).join('')}</div>
+    <div class="form">
+      <label class="field"><span id="a-bal-l">Остаток сейчас</span><input id="a-bal" inputmode="decimal" placeholder="0"></label>
+    </div>
+    <p class="note" id="a-note"></p>
     <button class="primary" id="a-save">Сохранить</button>
-    ${a ? '<button class="danger" id="a-del">Удалить счёт</button>' : ''}`;
+    <button class="danger" id="a-del" hidden></button>`;
   openSheet(html, s => {
+    const balEl = $('#a-bal', s);
+    const update = () => {
+      $$('#a-cur button', s).forEach(x => {
+        x.classList.toggle('on', x.dataset.c === sel);
+        x.textContent = `${SYM[x.dataset.c]} ${x.dataset.c}` + (own(x.dataset.c) || vals[x.dataset.c] !== '' ? ' •' : '');
+      });
+      $('#a-bal-l', s).textContent = `Остаток, ${SYM[sel]}`;
+      balEl.value = vals[sel];
+      $('#a-note', s).textContent = own(sel)
+        ? 'Изменение остатка — корректировка, в историю не попадает.'
+        : 'Такой валюты в банке ещё нет — впишите остаток, и она добавится.';
+      $('#a-del', s).hidden = !own(sel);
+      $('#a-del', s).textContent = `Удалить ${SYM[sel]} счёт`;
+    };
+    $('#a-cur', s).addEventListener('click', e => { const t = e.target.closest('[data-c]'); if (t) { vals[sel] = balEl.value; sel = t.dataset.c; update(); } });
+    balEl.addEventListener('input', () => { vals[sel] = balEl.value; });
+    update();
+
     $('#a-save', s).addEventListener('click', () => {
+      vals[sel] = balEl.value;
       const name = $('#a-name', s).value.trim();
       if (!name) return toast('Введите название');
-      const bal = $('#a-bal', s).value.trim() === '' ? 0 : num($('#a-bal', s).value);
-      if (!isFinite(bal)) return toast('Неверный остаток');
-      const currency = a ? a.currency : $('#a-cur', s).value;
-      if (activeAccounts().some(x => x !== a && x.name === name && x.currency === currency && !(a && x.name === a.name)))
-        return toast(`В «${name}» уже есть ${currency}`);
-      if (a) {
-        if (name !== a.name) bankAccs(a.name).forEach(x => { if (x !== a) x.name = name; });
-        a.name = name; a.initial = Math.round((a.initial + bal - b[a.id]) * 100) / 100;
-      } else S.accounts.push({ id: uid(), name, currency, initial: bal });
+      for (const c of CURS) if (vals[c].trim() !== '' && !isFinite(num(vals[c]))) return toast(`Неверный остаток ${SYM[c]}`);
+      if (name !== orig && bankNames().includes(name)) return toast(`«${name}» уже есть — откройте его карточку`);
+      if (orig && name !== orig) bankAccs(orig).forEach(x => { x.name = name; });
+      let any = false;
+      for (const c of CURS) {
+        const x = bankAccs(name).find(y => y.currency === c), v = vals[c].trim();
+        if (x) { any = true; if (v !== '') x.initial = Math.round((x.initial + num(v) - b[x.id]) * 100) / 100; }
+        else if (v !== '') { S.accounts.push({ id: uid(), name, currency: c, initial: num(v) }); any = true; }
+      }
+      if (!any) S.accounts.push({ id: uid(), name, currency: sel, initial: 0 });
       closeSheet(); commit();
     });
-    a && $('#a-del', s).addEventListener('click', () => {
-      const used = S.ops.some(o => o.accountId === a.id || o.toId === a.id) || S.recurring.some(r => r.accountId === a.id);
+    $('#a-del', s).addEventListener('click', () => {
+      const x = own(sel);
+      if (!x) return;
+      const used = S.ops.some(o => o.accountId === x.id || o.toId === x.id) || S.recurring.some(r => r.accountId === x.id);
       if (used) {
-        if (!confirm('По счёту есть операции. Скрыть счёт? Его остаток не будет учитываться в капитале. Вернуть можно в настройках.')) return;
-        a.archived = true;
+        if (!confirm('По счёту есть операции. Скрыть его? Остаток не будет учитываться в капитале. Вернуть можно в настройках.')) return;
+        x.archived = true;
       } else {
-        if (!confirm(`Удалить «${a.name}»?`)) return;
-        S.accounts = S.accounts.filter(x => x.id !== a.id);
+        if (!confirm(`Удалить «${x.name}» ${x.currency}?`)) return;
+        S.accounts = S.accounts.filter(y => y.id !== x.id);
       }
       closeSheet(); commit();
     });
@@ -623,7 +654,11 @@ document.addEventListener('click', e => {
     case 'new-account': accountSheet(); break;
     case 'open-bank': bankSheet(d.name); break;
     case 'edit-account': accountSheet(accById(d.id)); break;
-    case 'unhide-account': accById(d.id).archived = false; commit(); break;
+    case 'unhide-account': {
+      const x = accById(d.id);
+      if (bankAccs(x.name).some(y => y.currency === x.currency)) return toast(`В «${x.name}» уже есть ${x.currency}`);
+      x.archived = false; commit(); break;
+    }
     case 'new-rec': recSheet(); break;
     case 'edit-rec': recSheet(S.recurring.find(r => r.id === d.id)); break;
     case 'month': histMonth = shiftMonth(histMonth, +d.d); render(); break;
