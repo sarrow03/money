@@ -84,6 +84,7 @@ function defaultState() {
       income: ['Зарплата', 'Подработка', 'Подарки', 'Другое'],
     },
     rates: { EUR: 50.72, USD: 44.68, updated: null }, // гривен за 1 единицу
+    banksV2: true,
   };
 }
 
@@ -1174,6 +1175,11 @@ async function unlock(pw) {
   const key = await deriveKey(pw, v.salt, v.iter);
   try { S = await decryptVault(key, v); } catch { $('#lock-err').textContent = 'Неверный пароль'; return; }
   KEY = key; SALT = v.salt; ITERS = v.iter;
+  // Разовый переход на новый набор банков — только если ещё нет ни одной операции
+  if (!S.banksV2) {
+    if (!S.ops.length && !S.recurring.length) { const rates = S.rates; S = defaultState(); S.rates = rates; }
+    S.banksV2 = true; save();
+  }
   openApp();
 }
 function openApp() {
