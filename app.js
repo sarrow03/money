@@ -41,7 +41,8 @@ const SYM = { EUR: '€', UAH: '₴', USD: '$' };
 const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const nf0 = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
 const MAIN = () => (S && S.main) || 'EUR';
-const SUBC = () => (MAIN() === 'EUR' ? 'UAH' : 'EUR');
+// Вторая сумма под капиталом = следующая по кругу € → ₴ → $ → €; нажатие делает её главной
+const SUBC = () => ({ EUR: 'UAH', UAH: 'USD', USD: 'EUR' })[MAIN()];
 function fmt(v, cur, sign = false) {
   if (S && S.hide) return cur === 'UAH' ? '••• ₴' : `${SYM[cur]}•••`;
   const n = Math.round(v * 100) / 100;
@@ -425,8 +426,8 @@ function viewSettings() {
     <button class="secondary" data-action="nbu">Загрузить курс НБУ</button>
 
     <h2>Главная валюта</h2>
-    <div class="seg">${['EUR', 'UAH'].map(c => `<button data-action="set-main" data-c="${c}" class="${MAIN() === c ? 'on' : ''}">${c === 'EUR' ? '€ Евро' : '₴ Гривна'}</button>`).join('')}</div>
-    <p class="note">В ней показываются капитал и итоги. Быстро переключить — нажать на вторую сумму под капиталом.</p>
+    <div class="seg">${['EUR', 'UAH', 'USD'].map(c => `<button data-action="set-main" data-c="${c}" class="${MAIN() === c ? 'on' : ''}">${{ EUR: '€ Евро', UAH: '₴ Гривна', USD: '$ Доллар' }[c]}</button>`).join('')}</div>
+    <p class="note">В ней показываются капитал и итоги. Быстро переключить — нажать на вторую сумму под капиталом (€ → ₴ → $).</p>
 
     ${(S.templates || []).length ? `<h2>Шаблоны</h2><div class="chips">${S.templates.map((t, i) =>
       `<button class="chip" data-action="rename-tpl" data-i="${i}">${esc(t.name)}<span class="x" data-action="del-tpl" data-i="${i}">×</span></button>`).join('')}</div>
