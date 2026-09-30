@@ -69,7 +69,14 @@ function defaultState() {
   const acc = (name, currency) => ({ id: uid(), name, currency, initial: 0 });
   return {
     v: 1,
-    accounts: [acc('Revolut', 'EUR'), acc('Австрийский банк', 'EUR'), acc('Сенс Банк', 'UAH'), acc('Сенс Банк', 'USD'), acc('Сенс Банк', 'EUR'), acc('Наличные', 'EUR')],
+    accounts: [
+      acc('Сенс Банк', 'UAH'), acc('Сенс Банк', 'USD'), acc('Сенс Банк', 'EUR'),
+      acc('Монобанк', 'UAH'), acc('Монобанк', 'USD'), acc('Монобанк', 'EUR'),
+      acc('ПУМБ', 'UAH'), acc('ПУМБ', 'USD'), acc('ПУМБ', 'EUR'),
+      acc('Revolut', 'EUR'), acc('Revolut', 'USD'),
+      acc('Erste', 'EUR'),
+      acc('Наличные', 'EUR'), acc('Наличные', 'UAH'), acc('Наличные', 'USD'),
+    ],
     ops: [],
     recurring: [],
     categories: {
@@ -145,7 +152,11 @@ function favCat(type) {
   S.ops.filter(o => o.type === type).slice(-60).forEach(o => { cnt[o.category] = (cnt[o.category] || 0) + 1; });
   return Object.keys(cnt).filter(c => S.categories[type].includes(c)).sort((a, b) => cnt[b] - cnt[a])[0];
 }
-const accLabel = a => (a ? esc(a.name) + (bankAccs(a.name).length > 1 ? ' ' + SYM[a.currency] : '') : '?');
+const accLabel = a => (a ? esc(a.name) : '?');
+// Основная валюта банка: у украинских (есть ₴) — гривна, иначе евро. Меняется нажатием на вторую сумму.
+const bankMain = n => (S.bankMain && S.bankMain[n]) || (bankAccs(n).some(a => a.currency === 'UAH') ? 'UAH' : 'EUR');
+const bankSub = n => (bankMain(n) === 'UAH' ? 'EUR' : 'UAH');
+const CUR_ORDER = { UAH: 0, USD: 1, EUR: 2 };
 const rateOf = c => (c === 'UAH' ? 1 : +S.rates[c] || 1);
 const convert = (v, from, to) => (from === to ? v : v * rateOf(from) / rateOf(to));
 
@@ -248,26 +259,16 @@ function viewHome() {
   <h2>Счета</h2>
   <div class="accounts">
     ${banks.map(n => {
-      const list = accs.filter(a => a.name === n);
-      if (list.length === 1) {
-        const a = list[0];
-        return `<button class="acc" data-action="edit-account" data-id="${a.id}">
-          <div class="acc-name">${esc(a.name)}</div>
-          <div><div class="acc-bal">${fmt(b[a.id], a.currency)}</div>
-          <div class="acc-eur">${a.currency !== M ? '≈ ' + fmt(convert(b[a.id], a.currency, M), M) : ''}</div>
-          ${afterLine(b[a.id], after[a.id], a.currency)}</div></button>`;
-      }
+      const list = accs.filter(a => a.name === n), P = bankMain(n), Q = bankSub(n);
       const sum = list.reduce((x, a) => x + convert(b[a.id], a.currency, 'EUR'), 0);
       const sumAfter = list.reduce((x, a) => x + convert(after[a.id], a.currency, 'EUR'), 0);
-      const others = CURS.filter(c => c !== M);
       return `<button class="acc" data-action="open-bank" data-name="${esc(n)}">
         <div class="acc-name">${esc(n)}</div>
-        <div><div class="acc-bal">${dm(sum)}</div>
-        <div class="acc-eur">${others.map(c => '≈ ' + fmt(Math.round(convert(sum, 'EUR', c)), c)).join('<br>')}</div>
-        ${afterLine(sum, sumAfter, 'EUR').replace(fmt(sumAfter, 'EUR'), dm(sumAfter))}
-        <div class="acc-subs">${list.map(a => `<span>${fmt(b[a.id], a.currency)}</span>`).join('')}</div></div></button>`;
+        <div><div class="acc-bal">${fmt(convert(sum, 'EUR', P), P)}</div>
+        <div class="acc-eur">${fmt(convert(sum, 'EUR', Q), Q)}</div>
+        ${afterLine(sum, sumAfter, 'EUR').replace(fmt(sumAfter, 'EUR'), fmt(convert(sumAfter, 'EUR', P), P))}</div></button>`;
     }).join('')}
-    <button class="acc acc-add" data-action="new-account">+ Счёт</button>
+    <button class="acc acc-add" data-action="new-account">+ Банк</button>
   </div>
   <h2>Копилки <button class="link" data-action="new-goal">+ Новая</button></h2>
   ${goals.length ? `<div class="list">${goals.map(a => {
@@ -448,6 +449,7 @@ function viewSettings() {
     <button class="secondary" data-action="bio">${bioOn ? 'Выключить вход по Face ID' : 'Включить вход по Face ID'}</button>
     <button class="secondary" data-action="change-pw">Сменить пароль</button>
     <button class="danger" data-action="lock">Заблокировать</button>
+    <button class="danger" data-action="wipe">Удалить все данные</button>
     <input type="file" id="import-file" accept=".json,application/json" hidden>`;
 }
 
@@ -471,7 +473,7 @@ function accPicker(el, selId, onChange) {
   const b = balances();
   let id = selId && accById(selId) && !accById(selId).archived ? selId : activeAccounts()[0].id;
   const draw = () => {
-    const cur = accById(id), subs = bankAccs(cur.name);
+    const cur = accById(id), subs = bankAccs(cur.name).sort((x, y) => CUR_ORDER[x.currency] - CUR_ORDER[y.currency]);
     el.innerHTML = `<div class="chips pick">${bankNames().map(n => `<button class="chip ${n === cur.name ? 'on' : ''}" data-bank="${esc(n)}">${esc(n)}</button>`).join('')}</div>` +
       (subs.length > 1
         ? `<div class="seg">${subs.map(a => `<button class="${a.id === id ? 'on' : ''}" data-acc="${a.id}">${fmt(b[a.id], a.currency)}</button>`).join('')}</div>`
@@ -600,72 +602,58 @@ function opSheet({ op = null, rec = null, k = null, due = null, preset = null } 
   });
 }
 
-// Банк: название + остатки по валютам (€ / ₴ / $). Новая валюта создаётся, когда вписан её остаток.
+// Банк: название + остатки сразу во всех валютах. Пустое поле — такой валюты в банке нет.
 function accountSheet(a = null, bank = null) {
   const b = balances();
   const orig = a ? a.name : bank || '';
   const own = c => (orig ? bankAccs(orig).find(x => x.currency === c) : null);
-  const vals = {};
-  CURS.forEach(c => { const x = own(c); vals[c] = x ? String(Math.round(b[x.id] * 100) / 100) : ''; });
-  let sel = a ? a.currency : (CURS.find(c => !own(c)) || 'EUR');
-  const html = sheetHead(orig ? esc(orig) : 'Новый счёт') + `
+  const curs = [...CURS].sort((x, y) => CUR_ORDER[x] - CUR_ORDER[y]);
+  const html = sheetHead(orig ? esc(orig) : 'Новый банк') + `
     <div class="form">
-      <label class="field"><span>Банк</span><input id="a-name" list="bank-list" value="${esc(orig)}" placeholder="Например, Monobank"></label>
-      <datalist id="bank-list">${bankNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <label class="field"><span>Название</span><input id="a-name" value="${esc(orig)}" placeholder="Монобанк, Revolut, Наличные…"></label>
     </div>
-    <div class="plabel">Валюта</div>
-    <div class="seg" id="a-cur">${CURS.map(c => `<button data-c="${c}">${SYM[c]} ${c}</button>`).join('')}</div>
-    <div class="form">
-      <label class="field"><span id="a-bal-l">Остаток сейчас</span><input id="a-bal" inputmode="decimal" placeholder="0"></label>
+    <div class="plabel">Остатки сейчас</div>
+    <div class="form">${curs.map(c => { const x = own(c); return `
+      <label class="field"><span>${SYM[c]} ${c}</span><input data-bal="${c}" inputmode="decimal" placeholder="нет" value="${x ? Math.round(b[x.id] * 100) / 100 : ''}"></label>`; }).join('')}
     </div>
-    <p class="note" id="a-note"></p>
+    <p class="note">Впишите, сколько сейчас лежит в каждой валюте. Пустое поле — такой валюты в банке нет. Изменение остатка — корректировка, в историю не попадает.</p>
     <button class="primary" id="a-save">Сохранить</button>
-    <button class="danger" id="a-del" hidden></button>`;
+    ${orig ? '<button class="danger" id="a-del">Удалить банк</button>' : ''}`;
   openSheet(html, s => {
-    const balEl = $('#a-bal', s);
-    const update = () => {
-      $$('#a-cur button', s).forEach(x => {
-        x.classList.toggle('on', x.dataset.c === sel);
-        x.textContent = `${SYM[x.dataset.c]} ${x.dataset.c}` + (own(x.dataset.c) || vals[x.dataset.c] !== '' ? ' •' : '');
-      });
-      $('#a-bal-l', s).textContent = `Остаток, ${SYM[sel]}`;
-      balEl.value = vals[sel];
-      $('#a-note', s).textContent = own(sel)
-        ? 'Изменение остатка — корректировка, в историю не попадает.'
-        : 'Такой валюты в банке ещё нет — впишите остаток, и она добавится.';
-      $('#a-del', s).hidden = !own(sel);
-      $('#a-del', s).textContent = `Удалить ${SYM[sel]} счёт`;
-    };
-    $('#a-cur', s).addEventListener('click', e => { const t = e.target.closest('[data-c]'); if (t) { vals[sel] = balEl.value; sel = t.dataset.c; update(); } });
-    balEl.addEventListener('input', () => { vals[sel] = balEl.value; });
-    update();
-
     $('#a-save', s).addEventListener('click', () => {
-      vals[sel] = balEl.value;
       const name = $('#a-name', s).value.trim();
       if (!name) return toast('Введите название');
-      for (const c of CURS) if (vals[c].trim() !== '' && !isFinite(num(vals[c]))) return toast(`Неверный остаток ${SYM[c]}`);
-      if (name !== orig && bankNames().includes(name)) return toast(`«${name}» уже есть — откройте его карточку`);
-      if (orig && name !== orig) bankAccs(orig).forEach(x => { x.name = name; });
-      let any = false;
-      for (const c of CURS) {
-        const x = bankAccs(name).find(y => y.currency === c), v = vals[c].trim();
-        if (x) { any = true; if (v !== '') x.initial = Math.round((x.initial + num(v) - b[x.id]) * 100) / 100; }
-        else if (v !== '') { S.accounts.push({ id: uid(), name, currency: c, initial: num(v) }); any = true; }
+      const vals = {};
+      for (const el of $$('[data-bal]', s)) {
+        const v = el.value.trim();
+        if (v !== '' && !isFinite(calc(v))) return toast(`Неверный остаток ${SYM[el.dataset.bal]}`);
+        vals[el.dataset.bal] = v === '' ? null : calc(v);
       }
-      if (!any) S.accounts.push({ id: uid(), name, currency: sel, initial: 0 });
+      if (name !== orig && bankNames().includes(name)) {
+        // Объединение со существующим банком, если валюты не пересекаются
+        const mine = orig ? bankAccs(orig).map(x => x.currency) : CURS.filter(c => vals[c] != null);
+        if (bankAccs(name).some(x => mine.includes(x.currency) || isGoal(x))) return toast(`«${name}» уже есть`);
+        if (!confirm(`Объединить с «${name}»?`)) return;
+      }
+      if (orig && name !== orig) bankAccs(orig).forEach(x => { x.name = name; });
+      let any = bankAccs(name).length > 0;
+      for (const c of CURS) {
+        const x = bankAccs(name).find(y => y.currency === c), v = vals[c];
+        if (x) { if (v != null) x.initial = Math.round((x.initial + v - b[x.id]) * 100) / 100; }
+        else if (v != null) { S.accounts.push({ id: uid(), name, currency: c, initial: v }); any = true; }
+      }
+      if (!any) return toast('Впишите остаток хотя бы в одной валюте');
       closeSheet(); commit();
     });
-    $('#a-del', s).addEventListener('click', () => {
-      const x = own(sel);
-      if (!x) return;
-      const used = S.ops.some(o => o.accountId === x.id || o.toId === x.id) || S.recurring.some(r => r.accountId === x.id);
+    orig && $('#a-del', s).addEventListener('click', () => {
+      const list = bankAccs(orig);
+      const used = list.some(x => S.ops.some(o => o.accountId === x.id || o.toId === x.id) || S.recurring.some(r => r.accountId === x.id));
       if (used) {
-        if (!confirm('По счёту есть операции. Скрыть его? Остаток не будет учитываться в капитале. Вернуть можно в настройках.')) return;
-        x.archived = true;
+        if (!confirm(`По «${orig}» есть операции. Скрыть банк? Его остаток не будет учитываться. Вернуть можно в настройках.`)) return;
+        list.forEach(x => { x.archived = true; });
       } else {
-        if (!confirm(`Удалить «${x.name}» ${x.currency}?`)) return;
-        S.accounts = S.accounts.filter(y => y.id !== x.id);
+        if (!confirm(`Удалить «${orig}»?`)) return;
+        S.accounts = S.accounts.filter(x => !list.includes(x));
       }
       closeSheet(); commit();
     });
@@ -673,23 +661,27 @@ function accountSheet(a = null, bank = null) {
 }
 
 function bankSheet(name) {
-  const b = balances(), list = bankAccs(name), M = MAIN();
+  const b = balances(), P = bankMain(name), Q = bankSub(name);
   const after = { ...b };
   for (const u of upcoming()) after[u.r.accountId] += u.r.type === 'income' ? u.r.amount : -u.r.amount;
+  const list = bankAccs(name).sort((x, y) => convert(b[y.id], y.currency, 'EUR') - convert(b[x.id], x.currency, 'EUR'));
   const sum = list.reduce((x, a) => x + convert(b[a.id], a.currency, 'EUR'), 0);
   const html = sheetHead(esc(name)) + `
-    <div class="hero" style="padding-top:0"><div class="label">Всего</div><div class="big">${bigMoney(convert(sum, 'EUR', M), M)}</div>
-      <div class="sub">${CURS.filter(c => c !== M).map(c => '≈ ' + fmt(convert(sum, 'EUR', c), c)).join(' · ')}</div></div>
-    <div class="list">${list.map(a => `<button class="row" data-id="${a.id}">
+    <div class="hero" style="padding-top:0"><div class="label">Всего</div><div class="big">${bigMoney(convert(sum, 'EUR', P), P)}</div>
+      <button class="sub swap" id="b-swap">${fmt(convert(sum, 'EUR', Q), Q)} <span>⇅</span></button></div>
+    <div class="list">${list.map(a => `<div class="row">
       <div class="ico">${SYM[a.currency]}</div><div class="main"><div class="title">${a.currency}</div>
-      ${a.currency !== M ? `<div class="meta">≈ ${fmt(convert(b[a.id], a.currency, M), M)}</div>` : ''}
+      ${a.currency !== P ? `<div class="meta">≈ ${fmt(convert(b[a.id], a.currency, P), P)}</div>` : ''}
       ${Math.abs(after[a.id] - b[a.id]) > 0.004 ? `<div class="meta">после платежей ${fmt(after[a.id], a.currency)}</div>` : ''}</div>
-      <div class="amt">${fmt(b[a.id], a.currency)}</div></button>`).join('')}</div>
-    ${list.length < CURS.length ? '<button class="secondary" id="b-add">+ Добавить валюту</button>' : ''}`;
+      <div class="amt">${fmt(b[a.id], a.currency)}</div></div>`).join('')}</div>
+    <button class="primary" id="b-edit">Изменить остатки</button>
+    <button class="secondary" id="b-hist">Операции банка</button>`;
   openSheet(html, s => {
-    $$('.row[data-id]', s).forEach(el => el.addEventListener('click', () => { closeSheet(); setTimeout(() => accountSheet(accById(el.dataset.id)), 320); }));
-    const add = $('#b-add', s);
-    add && add.addEventListener('click', () => { closeSheet(); setTimeout(() => accountSheet(null, name), 320); });
+    $('#b-swap', s).addEventListener('click', () => { (S.bankMain ||= {})[name] = Q; save(); render(); bankSheet(name); });
+    $('#b-edit', s).addEventListener('click', () => { closeSheet(); setTimeout(() => accountSheet(null, name), 320); });
+    $('#b-hist', s).addEventListener('click', () => {
+      closeSheet(); tab = 'history'; histMonth = todayStr().slice(0, 7); histQ = histCat = ''; histAcc = name; render(); window.scrollTo(0, 0);
+    });
   });
 }
 
@@ -1019,6 +1011,11 @@ document.addEventListener('click', e => {
     case 'change-pw': changePassword(); break;
     case 'bio': bioOn ? disableBio() : enableBio(); break;
     case 'lock': lock(); break;
+    case 'wipe':
+      if (!confirm('Удалить ВСЕ данные на этом устройстве? Это нельзя отменить.')) return;
+      if (prompt('Для подтверждения напишите: удалить') !== 'удалить') return toast('Отменено');
+      saving.then(() => Promise.all([kvDel('vault'), kvDel('bio')])).then(() => { lock(); toast('Данные удалены'); });
+      break;
   }
 });
 document.addEventListener('change', e => {
