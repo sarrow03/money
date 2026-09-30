@@ -47,7 +47,7 @@ function defaultState() {
   const acc = (name, currency) => ({ id: uid(), name, currency, initial: 0 });
   return {
     v: 1,
-    accounts: [acc('Revolut', 'EUR'), acc('Австрийский банк', 'EUR'), acc('Укр. банк', 'UAH'), acc('Укр. банк', 'USD'), acc('Наличные', 'EUR')],
+    accounts: [acc('Revolut', 'EUR'), acc('Австрийский банк', 'EUR'), acc('Сенс Банк', 'UAH'), acc('Сенс Банк', 'USD'), acc('Сенс Банк', 'EUR'), acc('Наличные', 'EUR')],
     ops: [],
     recurring: [],
     categories: {
@@ -75,6 +75,11 @@ async function kvGet(k) {
 async function kvSet(k, v) {
   const db = await idb();
   return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); });
+}
+
+async function kvDel(k) {
+  const db = await idb();
+  return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').delete(k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); });
 }
 
 /* ---------- crypto ---------- */
@@ -153,8 +158,10 @@ function toast(msg) {
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
+let bioOn = false;
 function render() {
   if (!S) return;
+  kvGet('bio').then(b => { if (!!b !== bioOn) { bioOn = !!b; if (tab === 'settings') render(); } });
   $$('.tab').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
   const m = $('#main');
   m.innerHTML = ({ home: viewHome, history: viewHistory, recurring: viewRecurring, settings: viewSettings })[tab]();
@@ -205,7 +212,8 @@ function viewHome() {
       return `<button class="acc" data-action="open-bank" data-name="${esc(n)}">
         <div class="acc-name">${esc(n)}</div>
         <div><div class="acc-bal">${fmt(sum, 'EUR')}</div>
-        <div class="acc-eur">${list.map(a => fmt(b[a.id], a.currency)).join(' · ')}</div></div></button>`;
+        <div class="acc-eur">≈ ${fmt(Math.round(convert(sum, 'EUR', 'UAH')), 'UAH')}<br>≈ ${fmt(Math.round(convert(sum, 'EUR', 'USD')), 'USD')}</div>
+        <div class="acc-subs">${list.map(a => `<span>${fmt(b[a.id], a.currency)}</span>`).join('')}</div></div></button>`;
     }).join('')}
     <button class="acc acc-add" data-action="new-account">+ Счёт</button>
   </div>`;
@@ -298,6 +306,7 @@ function viewSettings() {
     <button class="secondary" data-action="export">Сохранить резервную копию</button>
     <button class="secondary" data-action="csv">Выгрузить в Excel (CSV)</button>
     <button class="secondary" data-action="import">Восстановить из копии</button>
+    <button class="secondary" data-action="bio">${bioOn ? 'Выключить вход по Face ID' : 'Включить вход по Face ID'}</button>
     <button class="secondary" data-action="change-pw">Сменить пароль</button>
     <button class="danger" data-action="lock">Заблокировать</button>
     <input type="file" id="import-file" accept=".json,application/json" hidden>`;
@@ -507,7 +516,7 @@ function bankSheet(name) {
   const sum = list.reduce((x, a) => x + convert(b[a.id], a.currency, 'EUR'), 0);
   const html = sheetHead(esc(name)) + `
     <div class="hero" style="padding-top:0"><div class="label">Всего</div><div class="big">${bigMoney(sum, 'EUR')}</div>
-      <div class="sub">${fmt(convert(sum, 'EUR', 'UAH'), 'UAH')}</div></div>
+      <div class="sub">≈ ${fmt(convert(sum, 'EUR', 'UAH'), 'UAH')} · ≈ ${fmt(convert(sum, 'EUR', 'USD'), 'USD')}</div></div>
     <div class="list">${list.map(a => `<button class="row" data-id="${a.id}">
       <div class="ico">${SYM[a.currency]}</div><div class="main"><div class="title">${a.currency}</div>
       ${a.currency !== 'EUR' ? `<div class="meta">≈ ${fmt(convert(b[a.id], a.currency, 'EUR'), 'EUR')}</div>` : ''}</div>
@@ -612,6 +621,7 @@ async function importBackup(file) {
     if (!confirm('Заменить все текущие данные данными из копии? Понадобится пароль той копии.')) return;
     await saving;
     await kvSet('vault', { v: 1, iter: d.iter || ITER, salt: unb64(d.salt), iv: unb64(d.iv), ct: unb64(d.ct) });
+    await kvDel('bio');
     lock();
     toast('Копия восстановлена — введите её пароль');
   } catch { toast('Не удалось прочитать файл'); }
@@ -626,7 +636,8 @@ async function changePassword() {
   SALT = crypto.getRandomValues(new Uint8Array(16)); ITERS = ITER;
   KEY = await deriveKey(pw, SALT, ITERS);
   await save();
-  toast('Пароль изменён');
+  await kvDel('bio');
+  toast('Пароль изменён. Face ID включите заново');
 }
 
 async function loadNBU() {
@@ -692,6 +703,7 @@ document.addEventListener('click', e => {
     case 'backup-now': exportBackup(); break;
     case 'import': $('#import-file').click(); break;
     case 'change-pw': changePassword(); break;
+    case 'bio': bioOn ? disableBio() : enableBio(); break;
     case 'lock': lock(); break;
   }
 });
@@ -703,6 +715,58 @@ document.addEventListener('change', e => {
   }
   if (e.target.id === 'import-file' && e.target.files[0]) importBackup(e.target.files[0]);
 });
+
+/* ---------- Face ID (passkey + WebAuthn PRF) ----------
+   Пароль шифруется ключом, который выдаёт passkey только после Face ID.
+   Ни пароль, ни ключ в открытом виде не хранятся. Нужна iOS 18+. */
+const rand = n => crypto.getRandomValues(new Uint8Array(n));
+async function bioAvailable() {
+  try { return !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch { return false; }
+}
+async function bioKey(credId, prfSalt) {
+  const a = await navigator.credentials.get({ publicKey: {
+    challenge: rand(32), rpId: location.hostname, userVerification: 'required', timeout: 60000,
+    allowCredentials: [{ type: 'public-key', id: credId }],
+    extensions: { prf: { eval: { first: prfSalt } } },
+  } });
+  const out = a.getClientExtensionResults().prf?.results?.first;
+  if (!out) throw new Error('noprf');
+  return crypto.subtle.importKey('raw', out, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+async function enableBio() {
+  if (!(await bioAvailable())) return toast('Face ID недоступен на этом устройстве');
+  const pw = prompt('Введите пароль приложения');
+  if (!pw) return;
+  const v = await kvGet('vault');
+  try { await decryptVault(await deriveKey(pw, v.salt, v.iter), v); } catch { return toast('Неверный пароль'); }
+  try {
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: rand(32), rp: { name: 'Деньги', id: location.hostname },
+      user: { id: rand(16), name: 'Деньги', displayName: 'Деньги' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'required' },
+      extensions: { prf: {} }, timeout: 60000,
+    } });
+    const credId = new Uint8Array(cred.rawId), prfSalt = rand(32);
+    const key = await bioKey(credId, prfSalt);
+    const iv = rand(12);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(pw)));
+    await kvSet('bio', { credId, prfSalt, iv, ct });
+    toast('Face ID включён'); render();
+  } catch (e) {
+    toast(e && e.message === 'noprf' ? 'Нужна iOS 18 или новее' : 'Face ID не включён');
+  }
+}
+async function disableBio() { await kvDel('bio'); toast('Face ID выключен'); render(); }
+async function unlockBio() {
+  const bio = await kvGet('bio');
+  if (!bio) return;
+  try {
+    const key = await bioKey(bio.credId, bio.prfSalt);
+    const pw = dec.decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bio.iv }, key, bio.ct));
+    await unlock(pw);
+  } catch { /* отменено — остаётся ввод пароля */ }
+}
 
 /* ---------- lock / unlock ---------- */
 let hasVault = false;
@@ -716,6 +780,8 @@ async function showLock() {
   $('#lock-pw').autocomplete = hasVault ? 'current-password' : 'new-password';
   $('#lock-btn').textContent = hasVault ? 'Открыть' : 'Создать';
   $('#lock-pw').value = ''; $('#lock-pw2').value = ''; $('#lock-err').textContent = '';
+  const bio = hasVault && await kvGet('bio');
+  $('#lock-bio').hidden = !bio;
 }
 function lock() {
   KEY = null; S = null; SALT = null;
@@ -733,23 +799,30 @@ $('#lock-form').addEventListener('submit', async e => {
   }
   btn.disabled = true;
   try {
-    if (hasVault) {
-      const v = await kvGet('vault');
-      const key = await deriveKey(pw, v.salt, v.iter);
-      try { S = await decryptVault(key, v); } catch { err.textContent = 'Неверный пароль'; return; }
-      KEY = key; SALT = v.salt; ITERS = v.iter;
-    } else {
+    if (hasVault) await unlock(pw);
+    else {
       SALT = crypto.getRandomValues(new Uint8Array(16)); ITERS = ITER;
       KEY = await deriveKey(pw, SALT, ITERS);
       S = defaultState();
       await save();
       if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     }
-    $('#lock-pw').value = ''; $('#lock-pw2').value = '';
-    $('#lock').hidden = true; $('#main').hidden = false; $('#tabbar').hidden = false;
-    tab = 'home'; render();
+    if (KEY) openApp();
   } finally { btn.disabled = false; }
 });
+$('#lock-bio').addEventListener('click', unlockBio);
+async function unlock(pw) {
+  const v = await kvGet('vault');
+  const key = await deriveKey(pw, v.salt, v.iter);
+  try { S = await decryptVault(key, v); } catch { $('#lock-err').textContent = 'Неверный пароль'; return; }
+  KEY = key; SALT = v.salt; ITERS = v.iter;
+  openApp();
+}
+function openApp() {
+  $('#lock-pw').value = ''; $('#lock-pw2').value = '';
+  $('#lock').hidden = true; $('#main').hidden = false; $('#tabbar').hidden = false;
+  tab = 'home'; render();
+}
 
 // Автоблокировка, если приложение было в фоне дольше 5 минут
 let hiddenAt = 0;
