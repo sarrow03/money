@@ -62,7 +62,7 @@ function bigMoney(v, cur) {
 const CAT_ICONS = {
   'Продукты': '🛒', 'Кафе и рестораны': '🍽️', 'Транспорт': '🚇', 'Машина': '🚗', 'Жильё': '🏠',
   'Покупки': '🛍️', 'Развлечения': '🎬', 'Путешествия': '✈️', 'Подписки': '🔁', 'Здоровье': '💊',
-  'Другое': '•', 'Зарплата': '💼', 'Подработка': '🧾', 'Подарки': '🎁', 'Перевод': '⇄', 'Долг': '🤝',
+  'Другое': '•', 'Неучтённое': '≈', 'Зарплата': '💼', 'Подработка': '🧾', 'Подарки': '🎁', 'Перевод': '⇄', 'Долг': '🤝',
 };
 const catIcon = c => CAT_ICONS[c] || esc((c || '•').slice(0, 1).toUpperCase());
 
@@ -229,10 +229,14 @@ function viewHome() {
   const banks = bankNames().filter(n => !bankAccs(n).some(isGoal));
   const tpls = S.templates || [];
   const needBackup = (S.ops.length || S.recurring.length) && (!S.lastBackup || addDays(S.lastBackup, 7) < todayStr());
+  const since = S.lastRecon || S.created || todayStr();
+  const needRecon = !needBackup && addDays(since, 7) < todayStr();
   const afterLine = (now, later, cur) => (Math.abs(later - now) > 0.004 ? `<div class="acc-after">после платежей ${fmt(later, cur)}</div>` : '');
   return `
   ${needBackup ? `<button class="card forecast" style="width:100%;border:0;text-align:left;margin:4px 0 0" data-action="backup-now">
     <div><div class="title">Сохраните резервную копию</div><div class="meta">${S.lastBackup ? 'Последняя: ' + fmtDay(S.lastBackup) : 'Ещё ни разу'} · в Файлы → iCloud Drive</div></div><div class="link">Сохранить</div></button>` : ''}
+  ${needRecon ? `<button class="card forecast" style="width:100%;border:0;text-align:left;margin:4px 0 0" data-action="reconcile">
+    <div><div class="title">Пора сверить остатки</div><div class="meta">${S.lastRecon ? 'Последняя сверка: ' + fmtDay(S.lastRecon) : '5 минут — и капитал снова точный'}</div></div><div class="link">Сверить</div></button>` : ''}
   <section class="hero">
     <div class="label">Общий капитал <button class="eye" data-action="toggle-hide" aria-label="Скрыть суммы">${S.hide ? EYE_OFF : EYE}</button></div>
     <div class="big">${bigMoney(convert(total, 'EUR', M), M)}</div>
@@ -246,10 +250,12 @@ function viewHome() {
     <div><div class="label">Прогноз после платежей</div>${incoming ? `<div class="meta">с учётом доходов ${dm(incoming, true)}</div>` : ''}</div>
     <div class="val">${dm(avail + incoming)}</div>
   </div>
-  ${tpls.length ? `<div class="plabel" style="margin-top:18px">Быстрая запись</div><div class="chips tpl">${tpls.map(t => {
+  <div class="plabel" style="margin-top:18px">Быстрая запись</div><div class="chips tpl">
+    <button class="chip" data-action="day-sheet">📋 Траты за день</button>
+    <button class="chip" data-action="reconcile">⚖️ Сверка</button>${tpls.map(t => {
     const a = accById(t.accountId);
     return `<button class="chip" data-action="use-tpl" data-id="${t.id}">${catIcon(t.category)} ${esc(t.name)} · ${a ? fmt(t.amount, a.currency) : ''}</button>`;
-  }).join('')}</div>` : ''}
+  }).join('')}</div>
   ${up.length ? `<h2>Ближайшие 30 дней</h2><div class="list">${up.map(u => `
     <div class="row">
       <div class="ico">${catIcon(u.r.category)}</div>
@@ -258,7 +264,7 @@ function viewHome() {
       <div class="amt ${u.r.type === 'income' ? 'pos' : ''}">${fmt(u.r.type === 'income' ? u.r.amount : -u.r.amount, u.cur, true)}</div>
       <button class="btn-ok" data-action="confirm-rec" data-id="${u.r.id}" data-k="${u.k}" data-due="${u.due}">✓</button>
     </div>`).join('')}</div>` : ''}
-  <h2>Счета</h2>
+  <h2>Счета <button class="link" data-action="reconcile">Сверка</button></h2>
   <div class="accounts">
     ${banks.map(n => {
       const list = accs.filter(a => a.name === n), P = bankMain(n), Q = bankSub(n);
@@ -456,12 +462,24 @@ function viewSettings() {
 }
 
 /* ---------- sheets ---------- */
+// Большая сумма: ширина поля по содержимому, чтобы число и валюта стояли ровно по центру
+const measureCtx = document.createElement('canvas').getContext('2d');
+function sizeAmount(el) {
+  const t = el.value || el.placeholder || '0';
+  el.style.fontSize = t.length > 12 ? '28px' : t.length > 8 ? '38px' : '';
+  const cs = getComputedStyle(el);
+  measureCtx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const ls = parseFloat(cs.letterSpacing) || 0;
+  el.style.width = Math.ceil(measureCtx.measureText(t).width + ls * t.length + 6) + 'px';
+}
+document.addEventListener('input', e => { if (e.target.closest && e.target.closest('.amount-wrap')) sizeAmount(e.target); });
 function openSheet(html, bind) {
   const root = $('#sheet-root');
   root.innerHTML = `<div class="overlay" data-close></div><div class="sheet">${html}</div>`;
   const sheet = $('.sheet', root);
   $$('[data-close]', root).forEach(el => el.addEventListener('click', closeSheet));
   bind && bind(sheet);
+  $$('.amount-wrap input', sheet).forEach(sizeAmount);
   requestAnimationFrame(() => requestAnimationFrame(() => root.classList.add('open')));
 }
 function closeSheet() {
@@ -505,12 +523,13 @@ function opSheet({ op = null, rec = null, k = null, due = null, preset = null } 
   const last = S.last && accById(S.last.accountId);
   let first = last && !last.archived ? last.id : accs[0].id;
   if (preset && preset.toId === first) first = (accs.find(a => a.id !== preset.toId && !isGoal(a)) || accs[0]).id;
-  const html = sheetHead(op ? 'Операция' : rec ? esc(rec.name) : 'Новая операция') + `
+  const html = sheetHead(op ? 'Операция' : rec ? esc(rec.name) : 'Новая операция', !op && !rec ? '<button class="link" id="f-day">За день</button>' : '') + `
     <div class="seg" id="f-type">
       <button data-t="expense">Расход</button><button data-t="income">Доход</button>${rec ? '' : '<button data-t="transfer">Перевод</button>'}
     </div>
     <div class="amount-wrap"><input id="f-amount" inputmode="decimal" placeholder="0" autocomplete="off" value="${op ? op.amount : rec ? rec.amount : ''}"><span id="f-cur"></span></div>
-    <div class="calc" id="f-calc">${['+', '−', '×', '÷'].map(c => `<button type="button" data-op="${c}">${c}</button>`).join('')}<span id="f-eq"></span></div>
+    <div class="calc-eq" id="f-eq"></div>
+    <div class="calc" id="f-calc">${['+', '−', '×', '÷'].map(c => `<button type="button" data-op="${c}">${c}</button>`).join('')}</div>
     <div class="plabel" id="f-acc-l">Счёт</div><div id="f-acc"></div>
     <div id="f-to-row"><div class="plabel">На счёт</div><div id="f-to"></div></div>
     <div class="form" id="f-toam-row">
@@ -545,12 +564,12 @@ function opSheet({ op = null, rec = null, k = null, due = null, preset = null } 
         const a = calc(amountEl.value);
         if (!toTouched) toAmEl.value = isFinite(a) ? Math.round(convert(a, from.currency, to.currency) * 100) / 100 : '';
       }
-      const list = tr ? [] : S.categories[type];
+      const list = tr ? [] : S.categories[type].concat(op && op.category === cat && cat && !S.categories[type].includes(cat) ? [cat] : []);
       if (!tr && !list.includes(cat)) cat = (!op && !rec && favCat(type)) || list[0];
       $('#f-cats', s).hidden = tr;
       const v = amountEl.value, r = calc(v);
       $('#f-eq', s).textContent = /[-+×÷*/−]/.test(v.replace(/^-/, '')) && isFinite(r) ? '= ' + String(r).replace('.', ',') : '';
-      amountEl.style.fontSize = v.length > 8 ? '34px' : '';
+      sizeAmount(amountEl);
       $('#f-cats', s).innerHTML = list.map(c => `<button class="chip ${c === cat ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</button>`).join('');
     };
     $('#f-type', s).addEventListener('click', e => { const t = e.target.closest('[data-t]'); if (t) { type = t.dataset.t; update(); } });
@@ -592,6 +611,7 @@ function opSheet({ op = null, rec = null, k = null, due = null, preset = null } 
       closeSheet(); commit();
     });
     rec && $('#f-skip', s).addEventListener('click', () => { rec.done[k] = 'skip'; closeSheet(); commit(); });
+    !op && !rec && $('#f-day', s).addEventListener('click', () => { closeSheet(); setTimeout(daySheet, 320); });
     !op && !rec && $('#f-tpl', s).addEventListener('click', () => {
       if (type === 'transfer') return toast('Шаблон — для расхода или дохода');
       const amount = calc(amountEl.value);
@@ -683,6 +703,105 @@ function bankSheet(name) {
     $('#b-edit', s).addEventListener('click', () => { closeSheet(); setTimeout(() => accountSheet(null, name), 320); });
     $('#b-hist', s).addEventListener('click', () => {
       closeSheet(); tab = 'history'; histMonth = todayStr().slice(0, 7); histQ = histCat = ''; histAcc = name; render(); window.scrollTo(0, 0);
+    });
+  });
+}
+
+// Траты за день: один счёт, суммы сразу по нескольким категориям (калькулятор в каждом поле)
+function daySheet() {
+  if (!activeAccounts().length) return toast('Сначала добавьте счёт');
+  const cats = S.categories.expense;
+  const html = sheetHead('Траты за день') + `
+    <div class="plabel">Счёт</div><div id="y-acc"></div>
+    <div class="form"><label class="field"><span>Дата</span><input type="date" id="y-date" value="${todayStr()}"></label></div>
+    <div class="plabel">Суммы по категориям</div>
+    <div class="form" id="y-list">${cats.map(c => `
+      <label class="field"><span>${catIcon(c)} ${esc(c)}<em class="y-eq"></em></span><input data-cat="${esc(c)}" inputmode="decimal" placeholder="0" autocomplete="off"></label>`).join('')}</div>
+    <div class="calc sticky" id="y-calc">${['+', '−', '×', '÷'].map(c => `<button type="button" data-op="${c}">${c}</button>`).join('')}</div>
+    <div class="card forecast"><div class="label">Итого за день</div><div class="val" id="y-total"></div></div>
+    <button class="primary" id="y-save">Сохранить</button>`;
+  openSheet(html, s => {
+    let cur = 'EUR', lastInput = null;
+    const inputs = $$('[data-cat]', s);
+    const update = () => {
+      cur = accById(accEl.value).currency;
+      let total = 0;
+      inputs.forEach(el => {
+        const v = el.value.trim(), r = calc(v), eq = el.parentElement.querySelector('em');
+        eq.textContent = v && /[-+×÷*/−]/.test(v.replace(/^-/, '')) && isFinite(r) ? '= ' + String(r).replace('.', ',') : '';
+        if (v && r > 0) total += r;
+      });
+      $('#y-total', s).textContent = fmt(total, cur);
+    };
+    const accEl = accPicker($('#y-acc', s), S.last && S.last.accountId, update);
+    inputs.forEach(el => { el.addEventListener('input', update); el.addEventListener('focus', () => { lastInput = el; }); });
+    $('#y-calc', s).addEventListener('pointerdown', e => {
+      const b2 = e.target.closest('[data-op]'); if (!b2 || !lastInput) return;
+      e.preventDefault();
+      lastInput.value = lastInput.value.replace(/[+−×÷]$/, '') + b2.dataset.op; update();
+    });
+    update();
+    $('#y-save', s).addEventListener('click', () => {
+      const date = $('#y-date', s).value || todayStr(), added = [];
+      for (const el of inputs) {
+        const v = el.value.trim(); if (!v) continue;
+        const r = calc(v);
+        if (!(r > 0)) return toast(`Проверьте: ${el.dataset.cat}`);
+        added.push({ id: uid(), ts: Date.now() + added.length, type: 'expense', amount: r, accountId: accEl.value, category: el.dataset.cat, date, note: '' });
+      }
+      if (!added.length) return toast('Введите хотя бы одну сумму');
+      S.ops.push(...added); S.last = { accountId: accEl.value };
+      closeSheet(); commit();
+      const total = added.reduce((x, o) => x + o.amount, 0);
+      toast(`Записано ${added.length}: ${fmt(-total, cur, true)}`, () => { if (S) { S.ops = S.ops.filter(o => !added.includes(o)); commit(); } });
+    });
+  });
+}
+
+// Сверка: вписываешь реальные остатки, разница записывается как «Неучтённое»
+function reconcileSheet() {
+  const b = balances();
+  const banks = bankNames().filter(n => !bankAccs(n).some(isGoal));
+  const ph = v => (S.hide ? '' : nf2.format(Math.round(v * 100) / 100).replace(/,00$/, ''));
+  const html = sheetHead('Сверка') + `
+    <p class="note">Откройте приложения банков и впишите, сколько реально лежит сейчас. Пустое поле — без изменений. Разница запишется как «Неучтённое» — так капитал всегда точный, даже если что-то не записали.</p>
+    ${banks.map(n => `<div class="plabel">${esc(n)}</div><div class="form">${bankAccs(n).sort((x, y) => CUR_ORDER[x.currency] - CUR_ORDER[y.currency]).map(a => `
+      <label class="field"><span>${SYM[a.currency]} ${a.currency}<em class="r-diff"></em></span><input data-acc="${a.id}" inputmode="decimal" placeholder="${ph(b[a.id])}" autocomplete="off"></label>`).join('')}</div>`).join('')}
+    <div class="card forecast"><div class="label">Разница</div><div class="val" id="r-total">—</div></div>
+    <button class="primary" id="r-save">Сохранить сверку</button>`;
+  openSheet(html, s => {
+    const inputs = $$('[data-acc]', s);
+    const diffs = () => inputs.map(el => {
+      const v = el.value.trim(), a = accById(el.dataset.acc);
+      if (!v) return null;
+      const r = calc(v);
+      return isFinite(r) ? { a, el, diff: Math.round((r - b[a.id]) * 100) / 100 } : { a, el, bad: true };
+    }).filter(Boolean);
+    const update = () => {
+      const emOf = el => el.parentElement.querySelector('em');
+      inputs.forEach(el => { emOf(el).textContent = ''; emOf(el).className = 'r-diff'; });
+      let total = 0;
+      for (const d of diffs()) {
+        const em = emOf(d.el);
+        if (d.bad) { em.textContent = '?'; continue; }
+        if (!d.diff) { em.textContent = '✓'; continue; }
+        em.textContent = fmt(d.diff, d.a.currency, true);
+        em.classList.add(d.diff > 0 ? 'pos' : 'late');
+        total += convert(d.diff, d.a.currency, 'EUR');
+      }
+      $('#r-total', s).textContent = diffs().length ? dm(total, true) : '—';
+    };
+    inputs.forEach(el => el.addEventListener('input', update));
+    $('#r-save', s).addEventListener('click', () => {
+      const list = diffs();
+      if (list.some(d => d.bad)) return toast('Проверьте суммы');
+      const today = todayStr();
+      list.filter(d => d.diff).forEach((d, i) => S.ops.push({
+        id: uid(), ts: Date.now() + i, type: d.diff < 0 ? 'expense' : 'income', amount: Math.abs(d.diff),
+        accountId: d.a.id, category: 'Неучтённое', date: today, note: 'Сверка',
+      }));
+      S.lastRecon = today;
+      closeSheet(); commit(); toast('Сверка сохранена');
     });
   });
 }
@@ -966,6 +1085,8 @@ document.addEventListener('click', e => {
     case 'edit-goal': goalSheet(accById(d.id)); break;
     case 'new-debt': debtSheet(); break;
     case 'edit-debt': debtSheet(S.debts.find(x => x.id === d.id)); break;
+    case 'day-sheet': daySheet(); break;
+    case 'reconcile': reconcileSheet(); break;
     case 'hist-cat': histCat = d.c; render(); break;
     case 'set-month': histMonth = d.k; render(); break;
     case 'clear-filters': histQ = histAcc = histCat = ''; render(); break;
@@ -1177,6 +1298,7 @@ async function unlock(pw) {
   try { S = await decryptVault(key, v); } catch { $('#lock-err').textContent = 'Неверный пароль'; return; }
   KEY = key; SALT = v.salt; ITERS = v.iter;
   // Разовый переход на новый набор банков — только если ещё нет ни одной операции
+  if (!S.created) { S.created = todayStr(); save(); }
   if (!S.banksV2) {
     if (!S.ops.length && !S.recurring.length) { const rates = S.rates; S = defaultState(); S.rates = rates; }
     S.banksV2 = true; save();

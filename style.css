@@ -130,16 +130,17 @@ h2 {
 
 .amount-wrap { display: flex; align-items: baseline; justify-content: center; gap: 6px; padding: 18px 0 20px; }
 .amount-wrap input {
-  width: 100%; max-width: 260px; border: 0; background: transparent; outline: none; text-align: right;
+  width: 40px; max-width: 80%; min-width: 20px; border: 0; background: transparent; outline: none; text-align: center;
   font-size: 52px; font-weight: 700; letter-spacing: -1.5px; font-variant-numeric: tabular-nums; padding: 0;
 }
-.amount-wrap span { font-size: 34px; font-weight: 600; color: var(--muted); width: 40%; }
+.amount-wrap span { font-size: 34px; font-weight: 600; color: var(--muted); flex: none; }
 
 .form { background: var(--card); border-radius: 16px; overflow: hidden; margin-bottom: 12px; }
 .field { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 16px; min-height: 50px; position: relative; }
 .field + .field::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: 0.5px solid var(--line); }
 .field > span { color: var(--text); flex: none; }
 .field input, .field select {
+  font-variant-numeric: tabular-nums;
   flex: 1; min-width: 0; border: 0; background: transparent; outline: none; text-align: right;
   font-size: 16px; color: #3A3A3F; padding: 12px 0; -webkit-appearance: none; appearance: none;
 }
@@ -211,10 +212,17 @@ h2 {
 .chips.tpl .chip { font-weight: 600; }
 
 /* Калькулятор */
-.calc { display: flex; gap: 8px; justify-content: center; align-items: center; margin: -10px 0 14px; }
+.calc { display: flex; gap: 10px; justify-content: center; align-items: center; margin: 0 0 16px; }
 .calc button { width: 46px; height: 36px; border: 0; border-radius: 10px; background: var(--card); font-size: 19px; font-weight: 600; }
 .calc button:active { background: #E4E4EA; }
-#f-eq { min-width: 64px; color: var(--muted); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.calc-eq { text-align: center; color: var(--muted); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; min-height: 22px; margin: -14px 0 8px; }
+.calc.sticky { position: sticky; bottom: calc(-1 * env(safe-area-inset-bottom) - 20px); background: var(--bg); margin: 0 -16px 10px; padding: 8px 0; z-index: 2; }
+.field em { font-style: normal; font-size: 13px; color: var(--muted); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.field em.pos { color: var(--green); } .field em.late { color: var(--red); }
+#y-list .field input, .sheet .field input[data-acc] { flex: 0 1 45%; }
+.field em { display: block; margin-top: 1px; }
+.field em:empty { display: none; }
+#y-list .field, .sheet .field:has(input[data-acc]) { padding-top: 6px; padding-bottom: 6px; }
 
 /* Прогресс-полоски */
 .bar { height: 4px; background: var(--bg); border-radius: 4px; margin-top: 7px; overflow: hidden; }
