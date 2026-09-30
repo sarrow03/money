@@ -189,3 +189,10 @@ h2 {
   z-index: 200; transition: transform .25s; max-width: 90%; text-align: center;
 }
 .toast.show { transform: translate(-50%, 0); }
+
+/* Выбор банка/валюты */
+.plabel { font-size: 13px; color: var(--muted); font-weight: 600; margin: 6px 4px 8px; }
+.chips.pick { margin: 0 0 8px; }
+#f-acc .note, #f-to .note, #r-acc .note { margin: 0 4px 12px; }
+#f-acc .seg, #f-to .seg, #r-acc .seg { margin-bottom: 14px; }
+#f-toam-row { margin-top: 2px; }

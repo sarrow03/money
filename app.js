@@ -47,7 +47,7 @@ function defaultState() {
   const acc = (name, currency) => ({ id: uid(), name, currency, initial: 0 });
   return {
     v: 1,
-    accounts: [acc('Revolut', 'EUR'), acc('Австрийский банк', 'EUR'), acc('Укр. банк', 'UAH'), acc('Укр. банк $', 'USD'), acc('Наличные', 'EUR')],
+    accounts: [acc('Revolut', 'EUR'), acc('Австрийский банк', 'EUR'), acc('Укр. банк', 'UAH'), acc('Укр. банк', 'USD'), acc('Наличные', 'EUR')],
     ops: [],
     recurring: [],
     categories: {
@@ -108,6 +108,10 @@ function commit() { save(); render(); }
 /* ---------- domain ---------- */
 const accById = id => S.accounts.find(a => a.id === id);
 const activeAccounts = () => S.accounts.filter(a => !a.archived);
+// Банк = все активные счета с одинаковым названием (по одному на валюту)
+const bankAccs = name => activeAccounts().filter(a => a.name === name);
+const bankNames = () => [...new Set(activeAccounts().map(a => a.name))];
+const accLabel = a => (a ? esc(a.name) + (bankAccs(a.name).length > 1 ? ' ' + SYM[a.currency] : '') : '?');
 const rateOf = c => (c === 'UAH' ? 1 : +S.rates[c] || 1);
 const convert = (v, from, to) => (from === to ? v : v * rateOf(from) / rateOf(to));
 
@@ -182,18 +186,27 @@ function viewHome() {
     <div class="row">
       <div class="ico">${catIcon(u.r.category)}</div>
       <div class="main"><div class="title">${esc(u.r.name)}</div>
-        <div class="meta ${u.late ? 'late' : ''}">${u.late ? 'просрочено · ' : ''}${fmtDay(u.due)} · ${esc(accById(u.r.accountId).name)}</div></div>
+        <div class="meta ${u.late ? 'late' : ''}">${u.late ? 'просрочено · ' : ''}${fmtDay(u.due)} · ${accLabel(accById(u.r.accountId))}</div></div>
       <div class="amt ${u.r.type === 'income' ? 'pos' : ''}">${fmt(u.r.type === 'income' ? u.r.amount : -u.r.amount, u.cur, true)}</div>
       <button class="btn-ok" data-action="confirm-rec" data-id="${u.r.id}" data-k="${u.k}" data-due="${u.due}">✓</button>
     </div>`).join('')}</div>` : ''}
   <h2>Счета</h2>
   <div class="accounts">
-    ${accs.map(a => `
-      <button class="acc" data-action="edit-account" data-id="${a.id}">
-        <div class="acc-name">${esc(a.name)}</div>
-        <div><div class="acc-bal">${fmt(b[a.id], a.currency)}</div>
-        <div class="acc-eur">${a.currency !== 'EUR' ? '≈ ' + fmt(convert(b[a.id], a.currency, 'EUR'), 'EUR') : ''}</div></div>
-      </button>`).join('')}
+    ${bankNames().map(n => {
+      const list = accs.filter(a => a.name === n);
+      if (list.length === 1) {
+        const a = list[0];
+        return `<button class="acc" data-action="edit-account" data-id="${a.id}">
+          <div class="acc-name">${esc(a.name)}</div>
+          <div><div class="acc-bal">${fmt(b[a.id], a.currency)}</div>
+          <div class="acc-eur">${a.currency !== 'EUR' ? '≈ ' + fmt(convert(b[a.id], a.currency, 'EUR'), 'EUR') : ''}</div></div></button>`;
+      }
+      const sum = list.reduce((x, a) => x + convert(b[a.id], a.currency, 'EUR'), 0);
+      return `<button class="acc" data-action="open-bank" data-name="${esc(n)}">
+        <div class="acc-name">${esc(n)}</div>
+        <div><div class="acc-bal">${fmt(sum, 'EUR')}</div>
+        <div class="acc-eur">${list.map(a => fmt(b[a.id], a.currency)).join(' · ')}</div></div></button>`;
+    }).join('')}
     <button class="acc acc-add" data-action="new-account">+ Счёт</button>
   </div>`;
 }
@@ -205,11 +218,11 @@ function opRow(o) {
   if (o.type === 'transfer') {
     const t = accById(o.toId);
     title = 'Перевод';
-    meta = `${a ? esc(a.name) : '?'} → ${t ? esc(t.name) : '?'}`;
+    meta = `${accLabel(a)} → ${accLabel(t)}`;
     amt = fmt(o.amount, cur) + (t && t.currency !== cur ? `<div class="meta">${fmt(o.toAmount ?? o.amount, t.currency)}</div>` : '');
   } else {
     title = esc(o.category);
-    meta = (a ? esc(a.name) : '?');
+    meta = accLabel(a);
     amt = fmt(o.type === 'income' ? o.amount : -o.amount, cur, true);
     if (o.type === 'income') cls = 'pos';
   }
@@ -250,7 +263,7 @@ function viewRecurring() {
       const a = accById(r.accountId);
       return `<button class="row" data-action="edit-rec" data-id="${r.id}">
         <div class="ico">${catIcon(r.category)}</div>
-        <div class="main"><div class="title">${esc(r.name)}</div><div class="meta">каждое ${r.day} число · ${a ? esc(a.name) : '—'}</div></div>
+        <div class="main"><div class="title">${esc(r.name)}</div><div class="meta">каждое ${r.day} число · ${a ? accLabel(a) : '—'}</div></div>
         <div class="amt ${r.type === 'income' ? 'pos' : ''}">${a ? fmt(r.type === 'income' ? r.amount : -r.amount, a.currency, true) : ''}</div></button>`;
     }).join('')}</div>` : '<div class="empty">Пока пусто</div>'}
     <button class="primary" style="margin-top:16px" data-action="new-rec">Добавить регулярный</button>`;
@@ -305,7 +318,30 @@ function closeSheet() {
   setTimeout(() => { if (!root.classList.contains('open')) root.innerHTML = ''; }, 300);
 }
 const sheetHead = (title, right = '') => `<div class="sheet-head"><button class="link" data-close>Отмена</button><b>${title}</b><span style="justify-self:end">${right}</span></div>`;
-const accOptions = (sel, b) => activeAccounts().map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)} · ${fmt(b[a.id], a.currency)}</option>`).join('');
+// Выбор счёта: сначала банк (чипы), потом валюта — если у банка их несколько
+function accPicker(el, selId, onChange) {
+  const b = balances();
+  let id = selId && accById(selId) && !accById(selId).archived ? selId : activeAccounts()[0].id;
+  const draw = () => {
+    const cur = accById(id), subs = bankAccs(cur.name);
+    el.innerHTML = `<div class="chips pick">${bankNames().map(n => `<button class="chip ${n === cur.name ? 'on' : ''}" data-bank="${esc(n)}">${esc(n)}</button>`).join('')}</div>` +
+      (subs.length > 1
+        ? `<div class="seg">${subs.map(a => `<button class="${a.id === id ? 'on' : ''}" data-acc="${a.id}">${fmt(b[a.id], a.currency)}</button>`).join('')}</div>`
+        : `<div class="note">Остаток ${fmt(b[id], cur.currency)}</div>`);
+  };
+  el.addEventListener('click', e => {
+    const bk = e.target.closest('[data-bank]'), ac = e.target.closest('[data-acc]');
+    if (bk) {
+      if (bk.dataset.bank === accById(id).name) return;
+      const subs = bankAccs(bk.dataset.bank);
+      id = (subs.find(a => a.currency === accById(id).currency) || subs[0]).id;
+    } else if (ac) id = ac.dataset.acc;
+    else return;
+    draw(); onChange && onChange();
+  });
+  draw();
+  return { get value() { return id; } };
+}
 
 // Операция: новая, редактирование или подтверждение регулярного
 function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
@@ -320,10 +356,10 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
       <button data-t="expense">Расход</button><button data-t="income">Доход</button>${rec ? '' : '<button data-t="transfer">Перевод</button>'}
     </div>
     <div class="amount-wrap"><input id="f-amount" inputmode="decimal" placeholder="0" autocomplete="off" value="${op ? op.amount : rec ? rec.amount : ''}"><span id="f-cur"></span></div>
-    <div class="form">
-      <label class="field"><span id="f-acc-l">Счёт</span><select id="f-acc">${accOptions(op ? op.accountId : rec ? rec.accountId : first, b)}</select></label>
-      <label class="field" id="f-to-row"><span>На счёт</span><select id="f-to">${accOptions(op && op.toId ? op.toId : (accs[1] || accs[0]).id, b)}</select></label>
-      <label class="field" id="f-toam-row"><span>Зачислено</span><input id="f-toamount" inputmode="decimal" value="${op && op.toAmount != null ? op.toAmount : ''}"></label>
+    <div class="plabel" id="f-acc-l">Счёт</div><div id="f-acc"></div>
+    <div id="f-to-row"><div class="plabel">На счёт</div><div id="f-to"></div></div>
+    <div class="form" id="f-toam-row">
+      <label class="field"><span>Зачислено</span><input id="f-toamount" inputmode="decimal" value="${op && op.toAmount != null ? op.toAmount : ''}"></label>
     </div>
     <div class="chips" id="f-cats"></div>
     <div class="form">
@@ -335,7 +371,10 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
     ${rec ? '<button class="secondary" id="f-skip">Пропустить в этот раз</button>' : ''}`;
 
   openSheet(html, s => {
-    const amountEl = $('#f-amount', s), accEl = $('#f-acc', s), toEl = $('#f-to', s), toAmEl = $('#f-toamount', s);
+    const amountEl = $('#f-amount', s), toAmEl = $('#f-toamount', s);
+    const reset = () => { toTouched = false; update(); };
+    const accEl = accPicker($('#f-acc', s), op ? op.accountId : rec ? rec.accountId : first, reset);
+    const toEl = accPicker($('#f-to', s), op && op.toId ? op.toId : (accs.find(a => a.id !== accEl.value) || accs[0]).id, reset);
     const update = () => {
       $$('#f-type button', s).forEach(x => x.classList.toggle('on', x.dataset.t === type));
       const from = accById(accEl.value), to = accById(toEl.value);
@@ -346,7 +385,7 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
       const cross = tr && from.currency !== to.currency;
       $('#f-toam-row', s).hidden = !cross;
       if (cross) {
-        $('#f-toam-row span', s).textContent = `Зачислено, ${SYM[to.currency]}`;
+        $('#f-toam-row .field span', s).textContent = `Зачислено, ${SYM[to.currency]}`;
         const a = num(amountEl.value);
         if (!toTouched) toAmEl.value = isFinite(a) ? Math.round(convert(a, from.currency, to.currency) * 100) / 100 : '';
       }
@@ -357,7 +396,6 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
     };
     $('#f-type', s).addEventListener('click', e => { const t = e.target.closest('[data-t]'); if (t) { type = t.dataset.t; update(); } });
     $('#f-cats', s).addEventListener('click', e => { const c = e.target.closest('[data-c]'); if (c) { cat = c.dataset.c; update(); } });
-    [accEl, toEl].forEach(el => el.addEventListener('change', () => { toTouched = false; update(); }));
     amountEl.addEventListener('input', update);
     toAmEl.addEventListener('input', () => { toTouched = true; });
     update();
@@ -392,15 +430,16 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
   });
 }
 
-function accountSheet(a = null) {
+function accountSheet(a = null, bank = null) {
   const b = balances();
-  const html = sheetHead(a ? 'Счёт' : 'Новый счёт') + `
+  const html = sheetHead(a ? `${esc(a.name)} ${SYM[a.currency]}` : bank ? 'Новая валюта' : 'Новый счёт') + `
     <div class="form">
-      <label class="field"><span>Название</span><input id="a-name" value="${esc(a ? a.name : '')}" placeholder="Например, Monobank"></label>
-      <label class="field"><span>Валюта</span><select id="a-cur" ${a ? 'disabled' : ''}>${CURS.map(c => `<option ${a && a.currency === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+      <label class="field"><span>Банк</span><input id="a-name" list="bank-list" value="${esc(a ? a.name : bank || '')}" placeholder="Например, Monobank"></label>
+      <datalist id="bank-list">${bankNames().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <label class="field"><span>Валюта</span><select id="a-cur" ${a ? 'disabled' : ''}>${CURS.map(c => `<option ${a ? (a.currency === c ? 'selected' : '') : (bank && bankAccs(bank).some(x => x.currency === c) ? 'disabled' : '')}>${c}</option>`).join('')}</select></label>
       <label class="field"><span>Остаток сейчас</span><input id="a-bal" inputmode="decimal" value="${a ? Math.round(b[a.id] * 100) / 100 : ''}" placeholder="0"></label>
     </div>
-    <p class="note">${a ? 'Изменение остатка — это корректировка, она не попадает в историю.' : ''}</p>
+    <p class="note">${a ? 'Изменение остатка — это корректировка, она не попадает в историю. Новое название банка применится ко всем его валютам.' : 'Несколько валют в одном банке: создайте счёт с тем же названием банка и другой валютой.'}</p>
     <button class="primary" id="a-save">Сохранить</button>
     ${a ? '<button class="danger" id="a-del">Удалить счёт</button>' : ''}`;
   openSheet(html, s => {
@@ -409,8 +448,13 @@ function accountSheet(a = null) {
       if (!name) return toast('Введите название');
       const bal = $('#a-bal', s).value.trim() === '' ? 0 : num($('#a-bal', s).value);
       if (!isFinite(bal)) return toast('Неверный остаток');
-      if (a) { a.name = name; a.initial = Math.round((a.initial + bal - b[a.id]) * 100) / 100; }
-      else S.accounts.push({ id: uid(), name, currency: $('#a-cur', s).value, initial: bal });
+      const currency = a ? a.currency : $('#a-cur', s).value;
+      if (activeAccounts().some(x => x !== a && x.name === name && x.currency === currency && !(a && x.name === a.name)))
+        return toast(`В «${name}» уже есть ${currency}`);
+      if (a) {
+        if (name !== a.name) bankAccs(a.name).forEach(x => { if (x !== a) x.name = name; });
+        a.name = name; a.initial = Math.round((a.initial + bal - b[a.id]) * 100) / 100;
+      } else S.accounts.push({ id: uid(), name, currency, initial: bal });
       closeSheet(); commit();
     });
     a && $('#a-del', s).addEventListener('click', () => {
@@ -427,6 +471,24 @@ function accountSheet(a = null) {
   });
 }
 
+function bankSheet(name) {
+  const b = balances(), list = bankAccs(name);
+  const sum = list.reduce((x, a) => x + convert(b[a.id], a.currency, 'EUR'), 0);
+  const html = sheetHead(esc(name)) + `
+    <div class="hero" style="padding-top:0"><div class="label">Всего</div><div class="big">${bigMoney(sum, 'EUR')}</div>
+      <div class="sub">${fmt(convert(sum, 'EUR', 'UAH'), 'UAH')}</div></div>
+    <div class="list">${list.map(a => `<button class="row" data-id="${a.id}">
+      <div class="ico">${SYM[a.currency]}</div><div class="main"><div class="title">${a.currency}</div>
+      ${a.currency !== 'EUR' ? `<div class="meta">≈ ${fmt(convert(b[a.id], a.currency, 'EUR'), 'EUR')}</div>` : ''}</div>
+      <div class="amt">${fmt(b[a.id], a.currency)}</div></button>`).join('')}</div>
+    ${list.length < CURS.length ? '<button class="secondary" id="b-add">+ Добавить валюту</button>' : ''}`;
+  openSheet(html, s => {
+    $$('.row[data-id]', s).forEach(el => el.addEventListener('click', () => { closeSheet(); setTimeout(() => accountSheet(accById(el.dataset.id)), 320); }));
+    const add = $('#b-add', s);
+    add && add.addEventListener('click', () => { closeSheet(); setTimeout(() => accountSheet(null, name), 320); });
+  });
+}
+
 function recSheet(r = null) {
   const b = balances(), accs = activeAccounts();
   if (!accs.length) return toast('Сначала добавьте счёт');
@@ -436,23 +498,24 @@ function recSheet(r = null) {
     <div class="amount-wrap"><input id="r-amount" inputmode="decimal" placeholder="0" value="${r ? r.amount : ''}"><span id="r-cur"></span></div>
     <div class="form">
       <label class="field"><span>Название</span><input id="r-name" value="${esc(r ? r.name : '')}" placeholder="Аренда, Spotify…"></label>
-      <label class="field"><span>Счёт</span><select id="r-acc">${accOptions(r ? r.accountId : accs[0].id, b)}</select></label>
       <label class="field"><span>Число месяца</span><input id="r-day" type="number" inputmode="numeric" min="1" max="31" value="${r ? r.day : 1}"></label>
     </div>
+    <div class="plabel">Счёт</div><div id="r-acc"></div>
     <div class="chips" id="r-cats"></div>
     <button class="primary" id="r-save">Сохранить</button>
     ${r ? '<button class="danger" id="r-del">Удалить</button>' : ''}`;
   openSheet(html, s => {
+    let accEl;
     const update = () => {
       $$('#r-type button', s).forEach(x => x.classList.toggle('on', x.dataset.t === type));
-      $('#r-cur', s).textContent = SYM[accById($('#r-acc', s).value).currency];
+      $('#r-cur', s).textContent = SYM[accById(accEl.value).currency];
       const list = S.categories[type];
       if (!list.includes(cat)) cat = list[0];
       $('#r-cats', s).innerHTML = list.map(c => `<button class="chip ${c === cat ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</button>`).join('');
     };
     $('#r-type', s).addEventListener('click', e => { const t = e.target.closest('[data-t]'); if (t) { type = t.dataset.t; update(); } });
     $('#r-cats', s).addEventListener('click', e => { const c = e.target.closest('[data-c]'); if (c) { cat = c.dataset.c; update(); } });
-    $('#r-acc', s).addEventListener('change', update);
+    accEl = accPicker($('#r-acc', s), r ? r.accountId : accs[0].id, update);
     update();
     $('#r-save', s).addEventListener('click', () => {
       const amount = num($('#r-amount', s).value), name = $('#r-name', s).value.trim(), day = parseInt($('#r-day', s).value, 10);
@@ -460,7 +523,7 @@ function recSheet(r = null) {
       if (!name) return toast('Введите название');
       if (!(day >= 1 && day <= 31)) return toast('Число от 1 до 31');
       const x = r || { id: uid(), start: todayStr(), done: {} };
-      Object.assign(x, { type, amount, name, day, accountId: $('#r-acc', s).value, category: cat });
+      Object.assign(x, { type, amount, name, day, accountId: accEl.value, category: cat });
       if (!r) S.recurring.push(x);
       closeSheet(); commit();
     });
@@ -558,6 +621,7 @@ document.addEventListener('click', e => {
     case 'edit-op': opSheet({ op: S.ops.find(o => o.id === d.id) }); break;
     case 'confirm-rec': opSheet({ rec: S.recurring.find(r => r.id === d.id), k: d.k, due: d.due }); break;
     case 'new-account': accountSheet(); break;
+    case 'open-bank': bankSheet(d.name); break;
     case 'edit-account': accountSheet(accById(d.id)); break;
     case 'unhide-account': accById(d.id).archived = false; commit(); break;
     case 'new-rec': recSheet(); break;
