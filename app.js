@@ -230,13 +230,13 @@ function viewHome() {
   const tpls = S.templates || [];
   const needBackup = (S.ops.length || S.recurring.length) && (!S.lastBackup || addDays(S.lastBackup, 7) < todayStr());
   const since = S.lastRecon || S.created || todayStr();
-  const needRecon = !needBackup && addDays(since, 7) < todayStr();
+  const needRecon = !needBackup && addDays(since, 30) < todayStr();
   const afterLine = (now, later, cur) => (Math.abs(later - now) > 0.004 ? `<div class="acc-after">после платежей ${fmt(later, cur)}</div>` : '');
   return `
   ${needBackup ? `<button class="card forecast" style="width:100%;border:0;text-align:left;margin:4px 0 0" data-action="backup-now">
     <div><div class="title">Сохраните резервную копию</div><div class="meta">${S.lastBackup ? 'Последняя: ' + fmtDay(S.lastBackup) : 'Ещё ни разу'} · в Файлы → iCloud Drive</div></div><div class="link">Сохранить</div></button>` : ''}
   ${needRecon ? `<button class="card forecast" style="width:100%;border:0;text-align:left;margin:4px 0 0" data-action="reconcile">
-    <div><div class="title">Пора сверить остатки</div><div class="meta">${S.lastRecon ? 'Последняя сверка: ' + fmtDay(S.lastRecon) : '5 минут — и капитал снова точный'}</div></div><div class="link">Сверить</div></button>` : ''}
+    <div><div class="title">Пора сверить остатки</div><div class="meta">${S.lastRecon ? 'Последняя сверка: ' + fmtDay(S.lastRecon) : 'Раз в месяц — и капитал снова точный'}</div></div><div class="link">Сверить</div></button>` : ''}
   <section class="hero">
     <div class="label">Общий капитал <button class="eye" data-action="toggle-hide" aria-label="Скрыть суммы">${S.hide ? EYE_OFF : EYE}</button></div>
     <div class="big">${bigMoney(convert(total, 'EUR', M), M)}</div>
@@ -250,12 +250,15 @@ function viewHome() {
     <div><div class="label">Прогноз после платежей</div>${incoming ? `<div class="meta">с учётом доходов ${dm(incoming, true)}</div>` : ''}</div>
     <div class="val">${dm(avail + incoming)}</div>
   </div>
+  ${S.simple ? `<button class="primary" style="margin-top:14px" data-action="reconcile">⚖️ Сверка остатков</button>
+  <div class="chips tpl" style="margin-top:10px"><button class="chip" data-action="inbox">📥 Apple Pay</button><button class="chip" data-action="day-sheet">📋 Траты за день</button></div>` : `
   <div class="plabel" style="margin-top:18px">Быстрая запись</div><div class="chips tpl">
     <button class="chip" data-action="day-sheet">📋 Траты за день</button>
+    <button class="chip" data-action="inbox">📥 Apple Pay</button>
     <button class="chip" data-action="reconcile">⚖️ Сверка</button>${tpls.map(t => {
     const a = accById(t.accountId);
     return `<button class="chip" data-action="use-tpl" data-id="${t.id}">${catIcon(t.category)} ${esc(t.name)} · ${a ? fmt(t.amount, a.currency) : ''}</button>`;
-  }).join('')}</div>
+  }).join('')}</div>`}
   ${up.length ? `<h2>Ближайшие 30 дней</h2><div class="list">${up.map(u => `
     <div class="row">
       <div class="ico">${catIcon(u.r.category)}</div>
@@ -278,19 +281,19 @@ function viewHome() {
     }).join('')}
     <button class="acc acc-add" data-action="new-account">+ Банк</button>
   </div>
-  <h2>Копилки <button class="link" data-action="new-goal">+ Новая</button></h2>
+  ${S.simple && !goals.length ? '' : `<h2>Копилки <button class="link" data-action="new-goal">+ Новая</button></h2>
   ${goals.length ? `<div class="list">${goals.map(a => {
     const t = a.goal || 0, v = b[a.id], pct = t > 0 ? Math.max(0, Math.min(100, v / t * 100)) : 0;
     return `<button class="row" data-action="edit-goal" data-id="${a.id}"><div class="ico">🎯</div>
       <div class="main"><div class="title">${esc(a.name)}</div><div class="meta">${fmt(v, a.currency)}${t ? ' из ' + fmt(t, a.currency) : ''}</div>
       ${t ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
       <div class="amt">${t ? Math.round(pct) + '%' : ''}</div></button>`;
-  }).join('')}</div>` : '<p class="note">Отложенные деньги с целью: «Отпуск», «Подушка». Не входят в «Доступно».</p>'}
-  <h2>Долги <button class="link" data-action="new-debt">+ Добавить</button></h2>
+  }).join('')}</div>` : '<p class="note">Отложенные деньги с целью: «Отпуск», «Подушка». Не входят в «Доступно».</p>'}`}
+  ${S.simple && !debts.length ? '' : `<h2>Долги <button class="link" data-action="new-debt">+ Добавить</button></h2>
   ${debts.length ? `<div class="list">${debts.map(d => `
     <button class="row" data-action="edit-debt" data-id="${d.id}"><div class="ico">🤝</div>
       <div class="main"><div class="title">${esc(d.person)}</div><div class="meta">${d.dir === 'lent' ? 'должен мне' : 'я должен'}${d.note ? ' · ' + esc(d.note) : ''}</div></div>
-      <div class="amt ${d.dir === 'lent' ? 'pos' : ''}">${fmt(d.amount, d.currency)}</div></button>`).join('')}</div>` : '<p class="note">Кто должен вам и кому должны вы.</p>'}`;
+      <div class="amt ${d.dir === 'lent' ? 'pos' : ''}">${fmt(d.amount, d.currency)}</div></button>`).join('')}</div>` : '<p class="note">Кто должен вам и кому должны вы.</p>'}`}`;
 }
 
 function opRow(o) {
@@ -430,6 +433,20 @@ function viewSettings() {
     </div>
     <p class="note">${r.updated ? 'Курс НБУ на ' + esc(r.updated) + '. ' : ''}Задайте вручную или загрузите официальный курс НБУ (запрос только за курсом, ваши данные не отправляются).</p>
     <button class="secondary" data-action="nbu">Загрузить курс НБУ</button>
+
+    <h2>Режим</h2>
+    <div class="seg"><button data-action="set-simple" data-v="1" class="${S.simple ? 'on' : ''}">Простой</button><button data-action="set-simple" data-v="0" class="${S.simple ? '' : 'on'}">Полный</button></div>
+    <p class="note">Простой: на главной капитал, банки и большая кнопка «Сверка». Копилки и долги появятся, только если они есть.</p>
+
+    <h2>Apple Pay</h2>
+    <button class="secondary" data-action="inbox">📥 Загрузить траты Apple Pay</button>
+    <details class="howto"><summary>Как настроить (один раз, 3 минуты)</summary><ol>
+      <li>Приложение <b>Команды</b> → вкладка <b>Автоматизация</b> → <b>+</b> → <b>Транзакция</b>.</li>
+      <li>Выберите свои карты, отметьте <b>Запускать немедленно</b> → <b>Далее</b> → <b>Новая пустая команда</b>.</li>
+      <li>Добавьте действие <b>Текст</b> и соберите строку через точку с запятой:<br><code>Текущая дата;Сумма;Продавец;Карта</code><br>Каждое слово — переменная: «Текущая дата» (нажмите на неё → формат <b>ISO 8601</b>), остальные — поля из <b>Входные данные команды</b>.</li>
+      <li>Добавьте действие <b>Добавить в текстовый файл</b>: файл <code>money-inbox.txt</code> в iCloud Drive, включите <b>Новая строка</b>.</li>
+      <li>Готово: каждая оплата Apple Pay дописывает строку. Раз в день/неделю нажмите «Загрузить траты Apple Pay» и выберите этот файл — приложение покажет только новые.</li>
+    </ol><p class="note">Названия действий в iOS могут немного отличаться. Файл остаётся в вашем iCloud, приложение только читает его.</p></details>
 
     <h2>Главная валюта</h2>
     <div class="seg">${['EUR', 'UAH', 'USD'].map(c => `<button data-action="set-main" data-c="${c}" class="${MAIN() === c ? 'on' : ''}">${{ EUR: '€ Евро', UAH: '₴ Гривна', USD: '$ Доллар' }[c]}</button>`).join('')}</div>
@@ -806,6 +823,89 @@ function reconcileSheet() {
   });
 }
 
+/* ---------- Apple Pay: входящие из файла, который пишет автоматизация «Команд» ---------- */
+function parseMoney(str) {
+  const t = String(str);
+  const cur = /€|EUR/i.test(t) ? 'EUR' : /₴|грн|UAH/i.test(t) ? 'UAH' : /\$|USD/i.test(t) ? 'USD' : null;
+  const neg = /[-−]/.test(t);
+  let n = t.replace(/[^\d.,]/g, '');
+  const lc = n.lastIndexOf(','), ld = n.lastIndexOf('.');
+  if (lc > -1 && ld > -1) n = lc > ld ? n.replace(/\./g, '').replace(',', '.') : n.replace(/,/g, '');
+  else if (lc > -1) n = /,\d{1,2}$/.test(n) ? n.replace(',', '.') : n.replace(/,/g, '');
+  else if (ld > -1 && !/\.\d{1,2}$/.test(n)) n = n.replace(/\./g, '');
+  const v = parseFloat(n);
+  return { amount: isFinite(v) ? Math.round(v * 100) / 100 : NaN, cur, neg };
+}
+function parseDateAny(str) {
+  let m = /(\d{4})-(\d{2})-(\d{2})/.exec(str);
+  if (m) return m[0];
+  m = /(\d{1,2})[./](\d{1,2})[./](\d{4})/.exec(str);
+  if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+  const d = new Date(str);
+  return isNaN(d) ? todayStr() : ymd(d);
+}
+async function inboxImport(file) {
+  const seen = new Set(S.inboxSeen || []);
+  const items = (await file.text()).split(/\r?\n/).map(l => l.trim()).filter(l => l && !seen.has(l)).map(line => {
+    const p = line.split(';');
+    if (p.length < 3) return null;
+    const card = p.length >= 4 ? p[p.length - 1].trim() : '';
+    const merchant = p.slice(2, p.length >= 4 ? -1 : undefined).join(';').trim() || 'Без названия';
+    const m = parseMoney(p[1]);
+    return m.amount > 0 ? { line, date: parseDateAny(p[0]), merchant, card, ...m } : null;
+  }).filter(Boolean);
+  if (!items.length) return toast('Новых трат нет');
+  inboxSheet(items);
+}
+const mkey = i => (i.neg ? '+' : '') + i.merchant.toLowerCase(); // память категорий: траты и возвраты отдельно
+function inboxSheet(items) {
+  const accs = activeAccounts().filter(a => !isGoal(a));
+  const cards = [...new Set(items.map(i => i.card))];
+  const def = (S.last && accById(S.last.accountId) ? S.last.accountId : accs[0].id);
+  const accOpts = sel => accs.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)} ${SYM[a.currency]}</option>`).join('');
+  const catFor = i => {
+    const list = S.categories[i.neg ? 'income' : 'expense'], saved = (S.merchantCats || {})[mkey(i)];
+    return list.includes(saved) ? saved : list.includes('Другое') ? 'Другое' : list[0];
+  };
+  const html = sheetHead(`Apple Pay · ${items.length}`) + `
+    <div class="plabel">Карта → счёт</div>
+    <div class="form">${cards.map((c, ci) => `<label class="field"><span>${esc(c || 'Карта')}</span><select data-card="${ci}">${accOpts((S.cardMap || {})[c] || def)}</select></label>`).join('')}</div>
+    <div class="plabel">Траты (снимите галочку, чтобы пропустить)</div>
+    <div class="list">${items.map((i, n) => `<div class="row">
+      <button class="chk on" data-i="${n}">✓</button>
+      <div class="main"><div class="title">${esc(i.merchant)}</div><div class="meta">${fmtDay(i.date)}${i.card ? ' · ' + esc(i.card) : ''}</div></div>
+      <div class="amt ${i.neg ? 'pos' : ''}">${i.neg ? '+' : '−'}${i.cur ? fmt(i.amount, i.cur) : String(i.amount).replace('.', ',')}
+        <select class="mini" data-cat="${n}">${S.categories[i.neg ? 'income' : 'expense'].map(c => `<option ${c === catFor(i) ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div></div>`).join('')}</div>
+    <button class="primary" id="i-save" style="margin-top:14px">Сохранить</button>
+    <p class="note">Категории запоминаются по магазину — в следующий раз подставятся сами.</p>`;
+  openSheet(html, s => {
+    $$('.chk', s).forEach(b => b.addEventListener('click', () => b.classList.toggle('on')));
+    $('#i-save', s).addEventListener('click', () => {
+      const cardAcc = {};
+      $$('[data-card]', s).forEach(el => { cardAcc[cards[+el.dataset.card]] = el.value; });
+      S.cardMap = { ...(S.cardMap || {}), ...cardAcc };
+      S.merchantCats ||= {};
+      const added = [];
+      items.forEach((i, n) => {
+        const cat = $(`[data-cat="${n}"]`, s).value;
+        S.merchantCats[mkey(i)] = cat;
+        if (!$(`.chk[data-i="${n}"]`, s).classList.contains('on')) return;
+        const a = accById(cardAcc[i.card]);
+        const conv = i.cur && i.cur !== a.currency;
+        added.push({
+          id: uid(), ts: Date.now() + n, type: i.neg ? 'income' : 'expense', accountId: a.id, category: cat, date: i.date,
+          amount: conv ? Math.round(convert(i.amount, i.cur, a.currency) * 100) / 100 : i.amount,
+          note: i.merchant + (conv ? ` (${fmt(i.amount, i.cur)})` : ''),
+        });
+      });
+      S.ops.push(...added);
+      S.inboxSeen = [...(S.inboxSeen || []), ...items.map(i => i.line)].slice(-3000);
+      closeSheet(); commit();
+      toast(`Добавлено: ${added.length}`, () => { if (S) { S.ops = S.ops.filter(o => !added.includes(o)); commit(); } });
+    });
+  });
+}
+
 // Копилка = отдельный счёт с целью. Входит в капитал, но не в «Доступно».
 function goalSheet(a = null) {
   const b = balances();
@@ -1086,6 +1186,8 @@ document.addEventListener('click', e => {
     case 'new-debt': debtSheet(); break;
     case 'edit-debt': debtSheet(S.debts.find(x => x.id === d.id)); break;
     case 'day-sheet': daySheet(); break;
+    case 'inbox': $('#inbox-file').click(); break;
+    case 'set-simple': S.simple = d.v === '1'; commit(); break;
     case 'reconcile': reconcileSheet(); break;
     case 'hist-cat': histCat = d.c; render(); break;
     case 'set-month': histMonth = d.k; render(); break;
@@ -1148,6 +1250,7 @@ document.addEventListener('change', e => {
     S.rates[e.target.dataset.rate] = v; S.rates.updated = null; commit();
   }
   if (e.target.id === 'import-file' && e.target.files[0]) importBackup(e.target.files[0]);
+  if (e.target.id === 'inbox-file' && e.target.files[0]) { inboxImport(e.target.files[0]); e.target.value = ''; }
   if (e.target.id === 'h-acc') { histAcc = e.target.value; $('#h-body').innerHTML = historyBody(); }
   if (e.target.id === 'h-cat') { histCat = e.target.value; $('#h-body').innerHTML = historyBody(); }
 });
