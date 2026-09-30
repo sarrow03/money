@@ -19,17 +19,39 @@ const fmtDayLong = s => new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day:
 const fmtMonth = k => new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(parseDate(k + '-01'));
 const num = v => { const n = parseFloat(String(v).replace(/\s/g, '').replace(',', '.')); return isFinite(n) ? Math.round(n * 100) / 100 : NaN; };
 
+// Сумма с калькулятором: 12+8,5 · 100/3 · (20-5)*2
+function calc(str) {
+  const x = String(str).replace(/\s/g, '').replace(/,/g, '.').replace(/[×x*]/g, '*').replace(/[÷:\/]/g, '/').replace(/[−–]/g, '-');
+  if (!x) return NaN;
+  let i = 0;
+  const peek = () => x[i];
+  const number = () => { const m = /^(\d+\.?\d*|\.\d+)/.exec(x.slice(i)); if (!m) throw 0; i += m[0].length; return parseFloat(m[0]); };
+  const factor = () => {
+    if (peek() === '-') { i++; return -factor(); }
+    if (peek() === '(') { i++; const v = expr(); if (peek() !== ')') throw 0; i++; return v; }
+    return number();
+  };
+  const term = () => { let v = factor(); while (peek() === '*' || peek() === '/') { const o = x[i++], r = factor(); v = o === '*' ? v * r : v / r; } return v; };
+  const expr = () => { let v = term(); while (peek() === '+' || peek() === '-') { const o = x[i++], r = term(); v = o === '+' ? v + r : v - r; } return v; };
+  try { const v = expr(); return i === x.length && isFinite(v) ? Math.round(v * 100) / 100 : NaN; } catch { return NaN; }
+}
+
 const CURS = ['EUR', 'UAH', 'USD'];
 const SYM = { EUR: '€', UAH: '₴', USD: '$' };
 const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const nf0 = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
+const MAIN = () => (S && S.main) || 'EUR';
+const SUBC = () => (MAIN() === 'EUR' ? 'UAH' : 'EUR');
 function fmt(v, cur, sign = false) {
+  if (S && S.hide) return cur === 'UAH' ? '••• ₴' : `${SYM[cur]}•••`;
   const n = Math.round(v * 100) / 100;
   const s = (Number.isInteger(n) ? nf0 : nf2).format(Math.abs(n));
   const pre = n < 0 ? '−' : (sign && n > 0 ? '+' : '');
   return cur === 'UAH' ? `${pre}${s} ₴` : `${pre}${SYM[cur]}${s}`;
 }
+const dm = (eur, sign) => fmt(convert(eur, 'EUR', MAIN()), MAIN(), sign); // в главной валюте
 function bigMoney(v, cur) {
+  if (S && S.hide) return cur === 'UAH' ? '•••<span class="dec"> ₴</span>' : `${SYM[cur]}•••`;
   const n = Math.round(v * 100) / 100;
   const [i, d] = nf2.format(Math.abs(n)).split(',');
   const pre = n < 0 ? '−' : '';
@@ -39,7 +61,7 @@ function bigMoney(v, cur) {
 const CAT_ICONS = {
   'Продукты': '🛒', 'Кафе и рестораны': '🍽️', 'Транспорт': '🚇', 'Машина': '🚗', 'Жильё': '🏠',
   'Покупки': '🛍️', 'Развлечения': '🎬', 'Путешествия': '✈️', 'Подписки': '🔁', 'Здоровье': '💊',
-  'Другое': '•', 'Зарплата': '💼', 'Подработка': '🧾', 'Подарки': '🎁', 'Перевод': '⇄',
+  'Другое': '•', 'Зарплата': '💼', 'Подработка': '🧾', 'Подарки': '🎁', 'Перевод': '⇄', 'Долг': '🤝',
 };
 const catIcon = c => CAT_ICONS[c] || esc((c || '•').slice(0, 1).toUpperCase());
 
@@ -116,6 +138,13 @@ const activeAccounts = () => S.accounts.filter(a => !a.archived);
 // Банк = все активные счета с одинаковым названием (по одному на валюту)
 const bankAccs = name => activeAccounts().filter(a => a.name === name);
 const bankNames = () => [...new Set(activeAccounts().map(a => a.name))];
+const isGoal = a => a.goal != null; // копилка
+// Самая частая категория среди последних операций этого типа
+function favCat(type) {
+  const cnt = {};
+  S.ops.filter(o => o.type === type).slice(-60).forEach(o => { cnt[o.category] = (cnt[o.category] || 0) + 1; });
+  return Object.keys(cnt).filter(c => S.categories[type].includes(c)).sort((a, b) => cnt[b] - cnt[a])[0];
+}
 const accLabel = a => (a ? esc(a.name) + (bankAccs(a.name).length > 1 ? ' ' + SYM[a.currency] : '') : '?');
 const rateOf = c => (c === 'UAH' ? 1 : +S.rates[c] || 1);
 const convert = (v, from, to) => (from === to ? v : v * rateOf(from) / rateOf(to));
@@ -127,6 +156,7 @@ function balances() {
   for (const o of S.ops) {
     if (o.type === 'expense') add(o.accountId, -o.amount);
     else if (o.type === 'income') add(o.accountId, o.amount);
+    else if (o.type === 'debt') add(o.accountId, o.dir === 'out' ? -o.amount : o.amount);
     else { add(o.accountId, -o.amount); add(o.toId, o.toAmount ?? o.amount); }
   }
   return b;
@@ -153,10 +183,15 @@ function upcoming() {
 let tab = 'home';
 let histMonth = todayStr().slice(0, 7);
 
-function toast(msg) {
-  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2200);
+function toast(msg, undo) {
+  const t = $('#toast');
+  t.innerHTML = esc(msg) + (undo ? '<button class="toast-undo">Отменить</button>' : '');
+  if (undo) t.querySelector('button').onclick = () => { t.classList.remove('show'); undo(); };
+  t.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), undo ? 4000 : 2200);
 }
+const EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18M10.6 5.1A10.7 10.7 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.2M6.6 6.6C3.9 8.4 2 12 2 12s3.5 7 10 7c1.9 0 3.5-.5 4.9-1.3"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
 
 let bioOn = false;
 function render() {
@@ -168,27 +203,40 @@ function render() {
 }
 
 function viewHome() {
-  const b = balances(), total = capitalEUR(b), up = upcoming();
+  const b = balances(), total = capitalEUR(b), up = upcoming(), M = MAIN();
   const reserved = up.filter(u => u.r.type === 'expense').reduce((s, u) => s + u.eur, 0);
   const incoming = up.filter(u => u.r.type === 'income').reduce((s, u) => s + u.eur, 0);
+  const after = { ...b };
+  for (const u of up) after[u.r.accountId] += u.r.type === 'income' ? u.r.amount : -u.r.amount;
   const accs = activeAccounts();
+  const goals = accs.filter(isGoal);
+  const inGoals = goals.reduce((s, a) => s + convert(b[a.id], a.currency, 'EUR'), 0);
+  const avail = total - reserved - inGoals;
+  const debts = (S.debts || []).filter(d => !d.closed);
+  const banks = bankNames().filter(n => !bankAccs(n).some(isGoal));
+  const tpls = S.templates || [];
   const needBackup = (S.ops.length || S.recurring.length) && (!S.lastBackup || addDays(S.lastBackup, 7) < todayStr());
+  const afterLine = (now, later, cur) => (Math.abs(later - now) > 0.004 ? `<div class="acc-after">после платежей ${fmt(later, cur)}</div>` : '');
   return `
   ${needBackup ? `<button class="card forecast" style="width:100%;border:0;text-align:left;margin:4px 0 0" data-action="backup-now">
     <div><div class="title">Сохраните резервную копию</div><div class="meta">${S.lastBackup ? 'Последняя: ' + fmtDay(S.lastBackup) : 'Ещё ни разу'} · в Файлы → iCloud Drive</div></div><div class="link">Сохранить</div></button>` : ''}
   <section class="hero">
-    <div class="label">Общий капитал</div>
-    <div class="big">${bigMoney(total, 'EUR')}</div>
-    <div class="sub">${fmt(convert(total, 'EUR', 'UAH'), 'UAH')}</div>
+    <div class="label">Общий капитал <button class="eye" data-action="toggle-hide" aria-label="Скрыть суммы">${S.hide ? EYE_OFF : EYE}</button></div>
+    <div class="big">${bigMoney(convert(total, 'EUR', M), M)}</div>
+    <button class="sub swap" data-action="swap-main">${fmt(convert(total, 'EUR', SUBC()), SUBC())} <span>⇅</span></button>
   </section>
   <div class="stats">
-    <div class="stat"><div class="label">Доступно</div><div class="val">${fmt(total - reserved, 'EUR')}</div></div>
-    <div class="stat"><div class="label">Зарезервировано</div><div class="val">${fmt(reserved, 'EUR')}</div></div>
+    <div class="stat"><div class="label">Доступно</div><div class="val">${dm(avail)}</div>${inGoals ? '<div class="meta">без копилок</div>' : ''}</div>
+    <div class="stat"><div class="label">Зарезервировано</div><div class="val">${dm(reserved)}</div></div>
   </div>
   <div class="card forecast">
-    <div><div class="label">Прогноз после платежей</div>${incoming ? `<div class="meta">с учётом доходов ${fmt(incoming, 'EUR', true)}</div>` : ''}</div>
-    <div class="val">${fmt(total - reserved + incoming, 'EUR')}</div>
+    <div><div class="label">Прогноз после платежей</div>${incoming ? `<div class="meta">с учётом доходов ${dm(incoming, true)}</div>` : ''}</div>
+    <div class="val">${dm(avail + incoming)}</div>
   </div>
+  ${tpls.length ? `<div class="plabel" style="margin-top:18px">Быстрая запись</div><div class="chips tpl">${tpls.map(t => {
+    const a = accById(t.accountId);
+    return `<button class="chip" data-action="use-tpl" data-id="${t.id}">${catIcon(t.category)} ${esc(t.name)} · ${a ? fmt(t.amount, a.currency) : ''}</button>`;
+  }).join('')}</div>` : ''}
   ${up.length ? `<h2>Ближайшие 30 дней</h2><div class="list">${up.map(u => `
     <div class="row">
       <div class="ico">${catIcon(u.r.category)}</div>
@@ -199,24 +247,41 @@ function viewHome() {
     </div>`).join('')}</div>` : ''}
   <h2>Счета</h2>
   <div class="accounts">
-    ${bankNames().map(n => {
+    ${banks.map(n => {
       const list = accs.filter(a => a.name === n);
       if (list.length === 1) {
         const a = list[0];
         return `<button class="acc" data-action="edit-account" data-id="${a.id}">
           <div class="acc-name">${esc(a.name)}</div>
           <div><div class="acc-bal">${fmt(b[a.id], a.currency)}</div>
-          <div class="acc-eur">${a.currency !== 'EUR' ? '≈ ' + fmt(convert(b[a.id], a.currency, 'EUR'), 'EUR') : ''}</div></div></button>`;
+          <div class="acc-eur">${a.currency !== M ? '≈ ' + fmt(convert(b[a.id], a.currency, M), M) : ''}</div>
+          ${afterLine(b[a.id], after[a.id], a.currency)}</div></button>`;
       }
       const sum = list.reduce((x, a) => x + convert(b[a.id], a.currency, 'EUR'), 0);
+      const sumAfter = list.reduce((x, a) => x + convert(after[a.id], a.currency, 'EUR'), 0);
+      const others = CURS.filter(c => c !== M);
       return `<button class="acc" data-action="open-bank" data-name="${esc(n)}">
         <div class="acc-name">${esc(n)}</div>
-        <div><div class="acc-bal">${fmt(sum, 'EUR')}</div>
-        <div class="acc-eur">≈ ${fmt(Math.round(convert(sum, 'EUR', 'UAH')), 'UAH')}<br>≈ ${fmt(Math.round(convert(sum, 'EUR', 'USD')), 'USD')}</div>
+        <div><div class="acc-bal">${dm(sum)}</div>
+        <div class="acc-eur">${others.map(c => '≈ ' + fmt(Math.round(convert(sum, 'EUR', c)), c)).join('<br>')}</div>
+        ${afterLine(sum, sumAfter, 'EUR').replace(fmt(sumAfter, 'EUR'), dm(sumAfter))}
         <div class="acc-subs">${list.map(a => `<span>${fmt(b[a.id], a.currency)}</span>`).join('')}</div></div></button>`;
     }).join('')}
     <button class="acc acc-add" data-action="new-account">+ Счёт</button>
-  </div>`;
+  </div>
+  <h2>Копилки <button class="link" data-action="new-goal">+ Новая</button></h2>
+  ${goals.length ? `<div class="list">${goals.map(a => {
+    const t = a.goal || 0, v = b[a.id], pct = t > 0 ? Math.max(0, Math.min(100, v / t * 100)) : 0;
+    return `<button class="row" data-action="edit-goal" data-id="${a.id}"><div class="ico">🎯</div>
+      <div class="main"><div class="title">${esc(a.name)}</div><div class="meta">${fmt(v, a.currency)}${t ? ' из ' + fmt(t, a.currency) : ''}</div>
+      ${t ? `<div class="bar"><i style="width:${pct}%"></i></div>` : ''}</div>
+      <div class="amt">${t ? Math.round(pct) + '%' : ''}</div></button>`;
+  }).join('')}</div>` : '<p class="note">Отложенные деньги с целью: «Отпуск», «Подушка». Не входят в «Доступно».</p>'}
+  <h2>Долги <button class="link" data-action="new-debt">+ Добавить</button></h2>
+  ${debts.length ? `<div class="list">${debts.map(d => `
+    <button class="row" data-action="edit-debt" data-id="${d.id}"><div class="ico">🤝</div>
+      <div class="main"><div class="title">${esc(d.person)}</div><div class="meta">${d.dir === 'lent' ? 'должен мне' : 'я должен'}${d.note ? ' · ' + esc(d.note) : ''}</div></div>
+      <div class="amt ${d.dir === 'lent' ? 'pos' : ''}">${fmt(d.amount, d.currency)}</div></button>`).join('')}</div>` : '<p class="note">Кто должен вам и кому должны вы.</p>'}`;
 }
 
 function opRow(o) {
@@ -228,6 +293,11 @@ function opRow(o) {
     title = 'Перевод';
     meta = `${accLabel(a)} → ${accLabel(t)}`;
     amt = fmt(o.amount, cur) + (t && t.currency !== cur ? `<div class="meta">${fmt(o.toAmount ?? o.amount, t.currency)}</div>` : '');
+  } else if (o.type === 'debt') {
+    title = o.repay ? (o.dir === 'in' ? 'Вернули долг' : 'Вернул долг') : (o.dir === 'out' ? 'Дал в долг' : 'Взял в долг');
+    meta = accLabel(a);
+    amt = fmt(o.dir === 'out' ? -o.amount : o.amount, cur, true);
+    if (o.dir === 'in') cls = 'pos';
   } else {
     title = esc(o.category);
     meta = accLabel(a);
@@ -236,25 +306,86 @@ function opRow(o) {
   }
   if (o.note) meta += ' · ' + esc(o.note);
   return `<button class="row" data-action="edit-op" data-id="${o.id}">
-    <div class="ico">${catIcon(o.type === 'transfer' ? 'Перевод' : o.category)}</div>
+    <div class="ico">${catIcon(o.type === 'transfer' ? 'Перевод' : o.type === 'debt' ? 'Долг' : o.category)}</div>
     <div class="main"><div class="title">${title}</div><div class="meta">${meta}</div></div>
     <div class="amt ${cls}">${amt}</div></button>`;
 }
 
+let histQ = '', histAcc = '', histCat = '';
+const eurOf = o => { const a = accById(o.accountId); return a ? convert(o.amount, a.currency, 'EUR') : 0; };
+function opMatches(o, q) {
+  const a = accById(o.accountId), t = o.toId && accById(o.toId);
+  if (histAcc && !((a && a.name === histAcc) || (t && t.name === histAcc))) return false;
+  if (histCat && o.category !== histCat) return false;
+  if (q) {
+    const hay = [o.note, o.category, a && a.name, t && t.name, o.type === 'transfer' ? 'перевод' : '', o.type === 'debt' ? 'долг' : ''].join(' ').toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
 function viewHistory() {
-  const ops = S.ops.filter(o => o.date.slice(0, 7) === histMonth)
+  const cats = [...new Set([...S.categories.expense, ...S.categories.income])];
+  return `<div class="page-title">История</div>
+    <div class="month"><button data-action="month" data-d="-1">‹</button><b>${fmtMonth(histMonth)}</b><button data-action="month" data-d="1">›</button></div>
+    <input id="h-q" class="search" type="search" placeholder="Поиск" value="${esc(histQ)}" autocomplete="off">
+    <div class="filters">
+      <select id="h-acc"><option value="">Все счета</option>${bankNames().map(n => `<option ${n === histAcc ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
+      <select id="h-cat"><option value="">Все категории</option>${cats.map(c => `<option ${c === histCat ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+    </div>
+    <div id="h-body">${historyBody()}</div>`;
+}
+function historyBody() {
+  const q = histQ.trim().toLowerCase();
+  const ops = S.ops.filter(o => (q || o.date.slice(0, 7) === histMonth) && opMatches(o, q))
     .sort((x, y) => y.date.localeCompare(x.date) || (y.ts || 0) - (x.ts || 0));
-  const eurOf = o => { const a = accById(o.accountId); return a ? convert(o.amount, a.currency, 'EUR') : 0; };
   const spent = ops.filter(o => o.type === 'expense').reduce((s, o) => s + eurOf(o), 0);
   const earned = ops.filter(o => o.type === 'income').reduce((s, o) => s + eurOf(o), 0);
-  let html = `<div class="page-title">История</div>
-    <div class="month"><button data-action="month" data-d="-1">‹</button><b>${fmtMonth(histMonth)}</b><button data-action="month" data-d="1">›</button></div>
-    <div class="stats"><div class="stat"><div class="label">Расходы</div><div class="val">${fmt(spent, 'EUR')}</div></div>
-    <div class="stat"><div class="label">Доходы</div><div class="val pos">${fmt(earned, 'EUR')}</div></div></div>`;
+  // Сравнение с прошлым месяцем (для текущего месяца — за тот же период)
+  let cmp = '';
+  const prevCats = {};
+  if (!q) {
+    const pk = shiftMonth(histMonth, -1);
+    const upto = todayStr().slice(0, 7) === histMonth ? +todayStr().slice(8) : 31;
+    const prevOps = S.ops.filter(o => o.type === 'expense' && o.date.slice(0, 7) === pk && +o.date.slice(8) <= upto && opMatches(o, ''));
+    const prev = prevOps.reduce((s, o) => s + eurOf(o), 0);
+    prevOps.forEach(o => { prevCats[o.category] = (prevCats[o.category] || 0) + eurOf(o); });
+    if (prev > 0) {
+      const p = Math.round((spent - prev) / prev * 100);
+      cmp = `<div class="meta ${p > 0 ? 'late' : 'pos'}">${p > 0 ? '▲' : '▼'} ${Math.abs(p)}% к прошлому мес.</div>`;
+    }
+  }
+  let html = `${q ? '<p class="note">Поиск по всем месяцам</p>' : ''}
+    ${histAcc || histCat || q ? '<button class="link" data-action="clear-filters">Сбросить фильтры</button>' : ''}
+    <div class="stats"><div class="stat"><div class="label">Расходы</div><div class="val">${dm(spent)}</div>${cmp}</div>
+    <div class="stat"><div class="label">Доходы</div><div class="val pos">${dm(earned)}</div></div></div>`;
+  if (!q) {
+    // Расходы за 6 месяцев (учитывают фильтры счёта и категории)
+    const months = [-5, -4, -3, -2, -1, 0].map(n => shiftMonth(histMonth, n));
+    const vals = months.map(k => S.ops.filter(o => o.type === 'expense' && o.date.slice(0, 7) === k && opMatches(o, '')).reduce((x, o) => x + eurOf(o), 0));
+    const max = Math.max(...vals);
+    if (max > 0) {
+      const short = k => new Intl.DateTimeFormat('ru-RU', { month: 'short' }).format(parseDate(k + '-01')).replace('.', '');
+      html += `<h2>Расходы по месяцам</h2><div class="card mchart" role="img" aria-label="Расходы за 6 месяцев">${months.map((k, i) => `
+        <button class="mcol ${k === histMonth ? 'on' : ''}" data-action="set-month" data-k="${k}" title="${esc(fmtMonth(k))}: ${dm(vals[i])}">
+          <span class="mval">${k === histMonth || vals[i] === max ? dm(Math.round(vals[i])) : ''}</span>
+          <span class="mtrack"><span class="mbar" style="height:${vals[i] ? Math.max(3, Math.round(vals[i] / max * 100)) : 0}%"></span></span>
+          <span class="mlab">${short(k)}</span></button>`).join('')}</div>`;
+    }
+  }
+  if (!q && !histCat && spent > 0) {
+    const byCat = {};
+    ops.filter(o => o.type === 'expense').forEach(o => { byCat[o.category] = (byCat[o.category] || 0) + eurOf(o); });
+    const rows = Object.entries(byCat).sort((x, y) => y[1] - x[1]);
+    html += `<h2>По категориям</h2><div class="list">${rows.map(([c, v]) => `
+      <button class="row" data-action="hist-cat" data-c="${esc(c)}"><div class="ico">${catIcon(c)}</div>
+        <div class="main"><div class="title">${esc(c)}</div><div class="bar"><i style="width:${Math.round(v / rows[0][1] * 100)}%"></i></div></div>
+        <div class="amt">${dm(v)}<div class="meta">${Math.round(v / spent * 100)}%${prevCats[c] ? ' · было ' + dm(prevCats[c]) : ''}</div></div></button>`).join('')}</div>
+      <h2>Операции</h2>`;
+  }
   if (!ops.length) return html + `<div class="empty">Операций нет</div>`;
   let day = null;
   for (const o of ops) {
-    if (o.date !== day) { if (day) html += '</div>'; day = o.date; html += `<div class="day-head">${fmtDayLong(day)}</div><div class="list">`; }
+    if (o.date !== day) { if (day) html += '</div>'; day = o.date; html += `<div class="day-head">${fmtDayLong(day)}${q ? ' ' + day.slice(0, 4) : ''}</div><div class="list">`; }
     html += opRow(o);
   }
   return html + '</div>';
@@ -264,8 +395,8 @@ function viewRecurring() {
   const list = [...S.recurring].sort((x, y) => x.day - y.day);
   const sum = t => list.filter(r => r.type === t).reduce((s, r) => { const a = accById(r.accountId); return s + (a ? convert(r.amount, a.currency, 'EUR') : 0); }, 0);
   return `<div class="page-title">Регулярные</div>
-    <div class="stats"><div class="stat"><div class="label">Платежи в месяц</div><div class="val">${fmt(sum('expense'), 'EUR')}</div></div>
-    <div class="stat"><div class="label">Доходы в месяц</div><div class="val pos">${fmt(sum('income'), 'EUR')}</div></div></div>
+    <div class="stats"><div class="stat"><div class="label">Платежи в месяц</div><div class="val">${dm(sum('expense'))}</div></div>
+    <div class="stat"><div class="label">Доходы в месяц</div><div class="val pos">${dm(sum('income'))}</div></div></div>
     <p class="note">Не меняют баланс, пока не подтвердите их на главной (✓).</p>
     ${list.length ? `<div class="list">${list.map(r => {
       const a = accById(r.accountId);
@@ -290,6 +421,14 @@ function viewSettings() {
     </div>
     <p class="note">${r.updated ? 'Курс НБУ на ' + esc(r.updated) + '. ' : ''}Задайте вручную или загрузите официальный курс НБУ (запрос только за курсом, ваши данные не отправляются).</p>
     <button class="secondary" data-action="nbu">Загрузить курс НБУ</button>
+
+    <h2>Главная валюта</h2>
+    <div class="seg">${['EUR', 'UAH'].map(c => `<button data-action="set-main" data-c="${c}" class="${MAIN() === c ? 'on' : ''}">${c === 'EUR' ? '€ Евро' : '₴ Гривна'}</button>`).join('')}</div>
+    <p class="note">В ней показываются капитал и итоги. Быстро переключить — нажать на вторую сумму под капиталом.</p>
+
+    ${(S.templates || []).length ? `<h2>Шаблоны</h2><div class="chips">${S.templates.map((t, i) =>
+      `<button class="chip" data-action="rename-tpl" data-i="${i}">${esc(t.name)}<span class="x" data-action="del-tpl" data-i="${i}">×</span></button>`).join('')}</div>
+      <p class="note">Новый шаблон — в форме операции: «☆ В шаблоны».</p>` : ''}
 
     <h2>Категории расходов</h2>
     <div class="chips">${cats('expense')}</div>
@@ -353,18 +492,21 @@ function accPicker(el, selId, onChange) {
 }
 
 // Операция: новая, редактирование или подтверждение регулярного
-function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
+function opSheet({ op = null, rec = null, k = null, due = null, preset = null } = {}) {
   const b = balances(), accs = activeAccounts();
   if (!accs.length) return toast('Сначала добавьте счёт');
-  let type = op ? op.type : rec ? rec.type : 'expense';
+  let type = op ? op.type : rec ? rec.type : (preset && preset.type) || 'expense';
   let cat = op ? op.category : rec ? rec.category : null;
   let toTouched = !!op;
-  const first = accs[0].id;
+  const last = S.last && accById(S.last.accountId);
+  let first = last && !last.archived ? last.id : accs[0].id;
+  if (preset && preset.toId === first) first = (accs.find(a => a.id !== preset.toId && !isGoal(a)) || accs[0]).id;
   const html = sheetHead(op ? 'Операция' : rec ? esc(rec.name) : 'Новая операция') + `
     <div class="seg" id="f-type">
       <button data-t="expense">Расход</button><button data-t="income">Доход</button>${rec ? '' : '<button data-t="transfer">Перевод</button>'}
     </div>
     <div class="amount-wrap"><input id="f-amount" inputmode="decimal" placeholder="0" autocomplete="off" value="${op ? op.amount : rec ? rec.amount : ''}"><span id="f-cur"></span></div>
+    <div class="calc" id="f-calc">${['+', '−', '×', '÷'].map(c => `<button type="button" data-op="${c}">${c}</button>`).join('')}<span id="f-eq"></span></div>
     <div class="plabel" id="f-acc-l">Счёт</div><div id="f-acc"></div>
     <div id="f-to-row"><div class="plabel">На счёт</div><div id="f-to"></div></div>
     <div class="form" id="f-toam-row">
@@ -377,13 +519,14 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
     </div>
     <button class="primary" id="f-save">${rec ? 'Подтвердить' : 'Сохранить'}</button>
     ${op ? '<button class="danger" id="f-del">Удалить операцию</button>' : ''}
-    ${rec ? '<button class="secondary" id="f-skip">Пропустить в этот раз</button>' : ''}`;
+    ${rec ? '<button class="secondary" id="f-skip">Пропустить в этот раз</button>' : ''}
+    ${!op && !rec ? '<button class="secondary" id="f-tpl">☆ В шаблоны</button>' : ''}`;
 
   openSheet(html, s => {
     const amountEl = $('#f-amount', s), toAmEl = $('#f-toamount', s);
     const reset = () => { toTouched = false; update(); };
     const accEl = accPicker($('#f-acc', s), op ? op.accountId : rec ? rec.accountId : first, reset);
-    const toEl = accPicker($('#f-to', s), op && op.toId ? op.toId : (accs.find(a => a.id !== accEl.value) || accs[0]).id, reset);
+    const toEl = accPicker($('#f-to', s), op && op.toId ? op.toId : preset && preset.toId ? preset.toId : (accs.find(a => a.id !== accEl.value) || accs[0]).id, reset);
     const update = () => {
       $$('#f-type button', s).forEach(x => x.classList.toggle('on', x.dataset.t === type));
       const from = accById(accEl.value), to = accById(toEl.value);
@@ -395,23 +538,31 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
       $('#f-toam-row', s).hidden = !cross;
       if (cross) {
         $('#f-toam-row .field span', s).textContent = `Зачислено, ${SYM[to.currency]}`;
-        const a = num(amountEl.value);
+        const a = calc(amountEl.value);
         if (!toTouched) toAmEl.value = isFinite(a) ? Math.round(convert(a, from.currency, to.currency) * 100) / 100 : '';
       }
       const list = tr ? [] : S.categories[type];
-      if (!tr && !list.includes(cat)) cat = list[0];
+      if (!tr && !list.includes(cat)) cat = (!op && !rec && favCat(type)) || list[0];
       $('#f-cats', s).hidden = tr;
+      const v = amountEl.value, r = calc(v);
+      $('#f-eq', s).textContent = /[-+×÷*/−]/.test(v.replace(/^-/, '')) && isFinite(r) ? '= ' + String(r).replace('.', ',') : '';
+      amountEl.style.fontSize = v.length > 8 ? '34px' : '';
       $('#f-cats', s).innerHTML = list.map(c => `<button class="chip ${c === cat ? 'on' : ''}" data-c="${esc(c)}">${esc(c)}</button>`).join('');
     };
     $('#f-type', s).addEventListener('click', e => { const t = e.target.closest('[data-t]'); if (t) { type = t.dataset.t; update(); } });
     $('#f-cats', s).addEventListener('click', e => { const c = e.target.closest('[data-c]'); if (c) { cat = c.dataset.c; update(); } });
     amountEl.addEventListener('input', update);
+    $('#f-calc', s).addEventListener('pointerdown', e => {
+      const b2 = e.target.closest('[data-op]'); if (!b2) return;
+      e.preventDefault(); // клавиатура не закрывается
+      amountEl.value = amountEl.value.replace(/[+−×÷]$/, '') + b2.dataset.op; update();
+    });
     toAmEl.addEventListener('input', () => { toTouched = true; });
     update();
     if (!op && !rec) setTimeout(() => amountEl.focus(), 350);
 
     $('#f-save', s).addEventListener('click', () => {
-      const amount = num(amountEl.value);
+      const amount = calc(amountEl.value);
       if (!(amount > 0)) return toast('Введите сумму');
       const date = $('#f-date', s).value || todayStr();
       const o = op || { id: uid(), ts: Date.now() };
@@ -425,6 +576,7 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
         delete o.category;
       } else { o.category = cat; delete o.toId; delete o.toAmount; }
       if (!op) S.ops.push(o);
+      if (!op && !rec) S.last = { accountId: accEl.value };
       if (rec) { o.recId = rec.id; o.recK = k; rec.done[k] = o.id; }
       closeSheet(); commit(); toast(rec ? 'Подтверждено' : 'Сохранено');
     });
@@ -436,6 +588,15 @@ function opSheet({ op = null, rec = null, k = null, due = null } = {}) {
       closeSheet(); commit();
     });
     rec && $('#f-skip', s).addEventListener('click', () => { rec.done[k] = 'skip'; closeSheet(); commit(); });
+    !op && !rec && $('#f-tpl', s).addEventListener('click', () => {
+      if (type === 'transfer') return toast('Шаблон — для расхода или дохода');
+      const amount = calc(amountEl.value);
+      if (!(amount > 0)) return toast('Сначала введите сумму');
+      const name = (prompt('Название шаблона', $('#f-note', s).value.trim() || cat) || '').trim();
+      if (!name) return;
+      (S.templates ||= []).push({ id: uid(), name, type, amount, accountId: accEl.value, category: cat });
+      commit(); toast('Шаблон добавлен на главную');
+    });
   });
 }
 
@@ -512,20 +673,146 @@ function accountSheet(a = null, bank = null) {
 }
 
 function bankSheet(name) {
-  const b = balances(), list = bankAccs(name);
+  const b = balances(), list = bankAccs(name), M = MAIN();
+  const after = { ...b };
+  for (const u of upcoming()) after[u.r.accountId] += u.r.type === 'income' ? u.r.amount : -u.r.amount;
   const sum = list.reduce((x, a) => x + convert(b[a.id], a.currency, 'EUR'), 0);
   const html = sheetHead(esc(name)) + `
-    <div class="hero" style="padding-top:0"><div class="label">Всего</div><div class="big">${bigMoney(sum, 'EUR')}</div>
-      <div class="sub">≈ ${fmt(convert(sum, 'EUR', 'UAH'), 'UAH')} · ≈ ${fmt(convert(sum, 'EUR', 'USD'), 'USD')}</div></div>
+    <div class="hero" style="padding-top:0"><div class="label">Всего</div><div class="big">${bigMoney(convert(sum, 'EUR', M), M)}</div>
+      <div class="sub">${CURS.filter(c => c !== M).map(c => '≈ ' + fmt(convert(sum, 'EUR', c), c)).join(' · ')}</div></div>
     <div class="list">${list.map(a => `<button class="row" data-id="${a.id}">
       <div class="ico">${SYM[a.currency]}</div><div class="main"><div class="title">${a.currency}</div>
-      ${a.currency !== 'EUR' ? `<div class="meta">≈ ${fmt(convert(b[a.id], a.currency, 'EUR'), 'EUR')}</div>` : ''}</div>
+      ${a.currency !== M ? `<div class="meta">≈ ${fmt(convert(b[a.id], a.currency, M), M)}</div>` : ''}
+      ${Math.abs(after[a.id] - b[a.id]) > 0.004 ? `<div class="meta">после платежей ${fmt(after[a.id], a.currency)}</div>` : ''}</div>
       <div class="amt">${fmt(b[a.id], a.currency)}</div></button>`).join('')}</div>
     ${list.length < CURS.length ? '<button class="secondary" id="b-add">+ Добавить валюту</button>' : ''}`;
   openSheet(html, s => {
     $$('.row[data-id]', s).forEach(el => el.addEventListener('click', () => { closeSheet(); setTimeout(() => accountSheet(accById(el.dataset.id)), 320); }));
     const add = $('#b-add', s);
     add && add.addEventListener('click', () => { closeSheet(); setTimeout(() => accountSheet(null, name), 320); });
+  });
+}
+
+// Копилка = отдельный счёт с целью. Входит в капитал, но не в «Доступно».
+function goalSheet(a = null) {
+  const b = balances();
+  let cur = a ? a.currency : MAIN();
+  const html = sheetHead(a ? esc(a.name) : 'Новая копилка') + `
+    <div class="form">
+      <label class="field"><span>Название</span><input id="g-name" value="${esc(a ? a.name : '')}" placeholder="Отпуск, подушка…"></label>
+      <label class="field"><span>Цель</span><input id="g-target" inputmode="decimal" value="${a && a.goal ? a.goal : ''}" placeholder="0"></label>
+      <label class="field"><span>Сейчас в копилке</span><input id="g-bal" inputmode="decimal" value="${a ? Math.round(b[a.id] * 100) / 100 : ''}" placeholder="0"></label>
+    </div>
+    ${a ? '' : `<div class="plabel">Валюта</div><div class="seg" id="g-cur">${CURS.map(c => `<button data-c="${c}">${SYM[c]} ${c}</button>`).join('')}</div>`}
+    <p class="note">Деньги в копилке входят в капитал, но не в «Доступно». Пополняйте переводом со счёта.</p>
+    ${a ? '<button class="secondary" id="g-add">Пополнить переводом</button>' : ''}
+    <button class="primary" id="g-save">Сохранить</button>
+    ${a ? '<button class="danger" id="g-del">Удалить копилку</button>' : ''}`;
+  openSheet(html, s => {
+    const upd = () => $$('#g-cur button', s).forEach(x => x.classList.toggle('on', x.dataset.c === cur));
+    !a && $('#g-cur', s).addEventListener('click', e => { const t = e.target.closest('[data-c]'); if (t) { cur = t.dataset.c; upd(); } });
+    upd();
+    $('#g-save', s).addEventListener('click', () => {
+      const name = $('#g-name', s).value.trim();
+      if (!name) return toast('Введите название');
+      if ((!a || name !== a.name) && bankNames().includes(name)) return toast('Такое название уже есть');
+      const tv = $('#g-target', s).value.trim(), bv = $('#g-bal', s).value.trim();
+      const target = tv ? calc(tv) : 0, bal = bv ? calc(bv) : 0;
+      if (!isFinite(target) || !isFinite(bal)) return toast('Проверьте суммы');
+      if (a) { a.name = name; a.goal = target; a.initial = Math.round((a.initial + bal - b[a.id]) * 100) / 100; }
+      else S.accounts.push({ id: uid(), name, currency: cur, initial: bal, goal: target });
+      closeSheet(); commit();
+    });
+    a && $('#g-add', s).addEventListener('click', () => { closeSheet(); setTimeout(() => opSheet({ preset: { type: 'transfer', toId: a.id } }), 320); });
+    a && $('#g-del', s).addEventListener('click', () => {
+      const used = S.ops.some(o => o.accountId === a.id || o.toId === a.id);
+      if (used) {
+        if (!confirm('По копилке есть операции. Скрыть её? Вернуть можно в настройках.')) return;
+        a.archived = true;
+      } else {
+        if (!confirm(`Удалить «${a.name}»?`)) return;
+        S.accounts = S.accounts.filter(x => x.id !== a.id);
+      }
+      closeSheet(); commit();
+    });
+  });
+}
+
+// Долг. «Через счёт» — деньги реально уходят/приходят, но не считаются расходом/доходом.
+function debtSheet(d = null) {
+  let dir = d ? d.dir : 'lent', via = true, cur = d ? d.currency : MAIN();
+  const html = sheetHead(d ? 'Долг' : 'Новый долг') + `
+    <div class="seg" id="d-dir"><button data-t="lent">Я дал в долг</button><button data-t="borrowed">Я взял в долг</button></div>
+    <div class="amount-wrap"><input id="d-amount" inputmode="decimal" placeholder="0" value="${d ? d.amount : ''}"><span id="d-cur"></span></div>
+    <div class="form">
+      <label class="field"><span>Кто</span><input id="d-person" value="${esc(d ? d.person : '')}" placeholder="Имя"></label>
+      <label class="field"><span>Комментарий</span><input id="d-note" value="${esc(d ? d.note : '')}" placeholder="необязательно"></label>
+    </div>
+    ${d ? (d.accountId ? `<p class="note">Проведён через ${accLabel(accById(d.accountId))}.</p>` : '<p class="note">Без счёта — баланс не меняется.</p>') : `
+    <div class="seg" id="d-via"><button data-t="1">Через счёт</button><button data-t="0">Без счёта</button></div>
+    <div id="d-acc-wrap"><div class="plabel" id="d-acc-l"></div><div id="d-acc"></div></div>
+    <div class="seg" id="d-curseg">${CURS.map(c => `<button data-c="${c}">${SYM[c]} ${c}</button>`).join('')}</div>
+    <p class="note" id="d-hint"></p>`}
+    <button class="primary" id="d-save">Сохранить</button>
+    ${d && !d.closed ? `<button class="secondary" id="d-close">${d.dir === 'lent' ? 'Мне вернули' : 'Я вернул'} — закрыть</button>` : ''}
+    ${d ? '<button class="danger" id="d-del">Удалить долг</button>' : ''}`;
+  openSheet(html, s => {
+    let accEl = null;
+    const update = () => {
+      $$('#d-dir button', s).forEach(x => x.classList.toggle('on', x.dataset.t === dir));
+      if (!d) {
+        $$('#d-via button', s).forEach(x => x.classList.toggle('on', x.dataset.t === (via ? '1' : '0')));
+        $('#d-acc-wrap', s).hidden = !via;
+        $('#d-curseg', s).hidden = via;
+        $('#d-acc-l', s).textContent = dir === 'lent' ? 'Со счёта' : 'На счёт';
+        if (via) cur = accById(accEl.value).currency;
+        $$('#d-curseg button', s).forEach(x => x.classList.toggle('on', x.dataset.c === cur));
+        $('#d-hint', s).textContent = via
+          ? (dir === 'lent' ? 'Спишется со счёта, но не попадёт в расходы.' : 'Зачислится на счёт, но не попадёт в доходы.')
+          : 'Просто запись — баланс не меняется.';
+      }
+      $('#d-cur', s).textContent = SYM[cur];
+    };
+    if (!d) {
+      accEl = accPicker($('#d-acc', s), S.last && S.last.accountId, update);
+      $('#d-via', s).addEventListener('click', e => { const t = e.target.closest('[data-t]'); if (t) { via = t.dataset.t === '1'; update(); } });
+      $('#d-curseg', s).addEventListener('click', e => { const t = e.target.closest('[data-c]'); if (t) { cur = t.dataset.c; update(); } });
+    }
+    $('#d-dir', s).addEventListener('click', e => { const t = e.target.closest('[data-t]'); if (t) { dir = t.dataset.t; update(); } });
+    update();
+    $('#d-save', s).addEventListener('click', () => {
+      const amount = calc($('#d-amount', s).value), person = $('#d-person', s).value.trim();
+      if (!(amount > 0)) return toast('Введите сумму');
+      if (!person) return toast('Кто?');
+      const x = d || { id: uid(), date: todayStr(), closed: false };
+      Object.assign(x, { dir, amount, person, note: $('#d-note', s).value.trim() });
+      if (!d) {
+        x.currency = cur;
+        if (via) {
+          x.accountId = accEl.value;
+          S.ops.push({ id: uid(), ts: Date.now(), type: 'debt', dir: dir === 'lent' ? 'out' : 'in', amount, accountId: x.accountId, date: x.date, note: person, debtId: x.id });
+        }
+        (S.debts ||= []).push(x);
+      } else {
+        const o = S.ops.find(y => y.debtId === x.id && !y.repay);
+        if (o) { o.amount = amount; o.dir = dir === 'lent' ? 'out' : 'in'; o.note = person; }
+      }
+      closeSheet(); commit();
+    });
+    d && !d.closed && $('#d-close', s).addEventListener('click', () => {
+      const a = d.accountId && accById(d.accountId);
+      if (a) {
+        if (!confirm(`${d.dir === 'lent' ? 'Зачислить на' : 'Списать с'} «${a.name}» ${fmt(d.amount, d.currency)}?`)) return;
+        S.ops.push({ id: uid(), ts: Date.now(), type: 'debt', dir: d.dir === 'lent' ? 'in' : 'out', amount: d.amount, accountId: a.id, date: todayStr(), note: d.person, debtId: d.id, repay: true });
+      }
+      d.closed = true; closeSheet(); commit(); toast('Долг закрыт');
+    });
+    d && $('#d-del', s).addEventListener('click', () => {
+      if (!confirm('Удалить долг? Его операции тоже удалятся.')) return;
+      S.debts = S.debts.filter(y => y.id !== d.id);
+      S.ops = S.ops.filter(o => o.debtId !== d.id);
+      closeSheet(); commit();
+    });
   });
 }
 
@@ -603,10 +890,10 @@ async function exportCSV() {
   const n = v => String(Math.round(v * 100) / 100).replace('.', ',');
   const name = id => (accById(id) || {}).name || '';
   const cur = id => (accById(id) || {}).currency || '';
-  const T = { expense: 'Расход', income: 'Доход', transfer: 'Перевод' };
+  const T = { expense: 'Расход', income: 'Доход', transfer: 'Перевод', debt: 'Долг' };
   const rows = [['Дата', 'Тип', 'Сумма', 'Валюта', 'Счёт', 'Категория', 'На счёт', 'Зачислено', 'Валюта зачисления', 'Комментарий']];
   [...S.ops].sort((a, b) => a.date.localeCompare(b.date)).forEach(o => rows.push([
-    o.date, T[o.type], n(o.type === 'expense' ? -o.amount : o.amount), cur(o.accountId), name(o.accountId), o.category || '',
+    o.date, T[o.type], n(o.type === 'expense' || (o.type === 'debt' && o.dir === 'out') ? -o.amount : o.amount), cur(o.accountId), name(o.accountId), o.category || '',
     o.toId ? name(o.toId) : '', o.toId ? n(o.toAmount ?? o.amount) : '', o.toId ? cur(o.toId) : '', o.note || '']));
   const b = balances();
   rows.push([], ['Счёт', 'Валюта', 'Остаток']);
@@ -658,9 +945,36 @@ document.addEventListener('click', e => {
   if (!el || !S) return;
   const d = el.dataset;
   switch (d.action) {
-    case 'tab': tab = d.tab; if (tab === 'history') histMonth = todayStr().slice(0, 7); render(); window.scrollTo(0, 0); break;
+    case 'tab': tab = d.tab; if (tab === 'history') { histMonth = todayStr().slice(0, 7); histQ = histAcc = histCat = ''; } render(); window.scrollTo(0, 0); break;
     case 'new-op': opSheet(); break;
-    case 'edit-op': opSheet({ op: S.ops.find(o => o.id === d.id) }); break;
+    case 'edit-op': {
+      const o = S.ops.find(x => x.id === d.id);
+      if (o.type !== 'debt') { opSheet({ op: o }); break; }
+      const dd = (S.debts || []).find(x => x.id === o.debtId);
+      if (dd) debtSheet(dd);
+      else if (confirm('Долг уже удалён. Удалить и эту операцию?')) { S.ops = S.ops.filter(x => x !== o); commit(); }
+      break;
+    }
+    case 'toggle-hide': S.hide = !S.hide; commit(); break;
+    case 'swap-main': S.main = SUBC(); commit(); break;
+    case 'set-main': S.main = d.c; commit(); break;
+    case 'use-tpl': {
+      const t = S.templates.find(x => x.id === d.id), a = accById(t.accountId);
+      if (!a || a.archived) return toast('Счёт шаблона удалён');
+      const o = { id: uid(), ts: Date.now(), type: t.type, amount: t.amount, accountId: a.id, category: t.category, date: todayStr(), note: t.name };
+      S.ops.push(o); commit();
+      toast(`${t.name}: ${fmt(t.type === 'expense' ? -t.amount : t.amount, a.currency, true)}`, () => { if (S) { S.ops = S.ops.filter(x => x !== o); commit(); } });
+      break;
+    }
+    case 'del-tpl': e.stopPropagation(); if (confirm(`Удалить шаблон «${S.templates[d.i].name}»?`)) { S.templates.splice(+d.i, 1); commit(); } break;
+    case 'rename-tpl': { const v = (prompt('Название шаблона', S.templates[d.i].name) || '').trim(); if (v) { S.templates[d.i].name = v; commit(); } break; }
+    case 'new-goal': goalSheet(); break;
+    case 'edit-goal': goalSheet(accById(d.id)); break;
+    case 'new-debt': debtSheet(); break;
+    case 'edit-debt': debtSheet(S.debts.find(x => x.id === d.id)); break;
+    case 'hist-cat': histCat = d.c; render(); break;
+    case 'set-month': histMonth = d.k; render(); break;
+    case 'clear-filters': histQ = histAcc = histCat = ''; render(); break;
     case 'confirm-rec': opSheet({ rec: S.recurring.find(r => r.id === d.id), k: d.k, due: d.due }); break;
     case 'new-account': accountSheet(); break;
     case 'open-bank': bankSheet(d.name); break;
@@ -714,6 +1028,11 @@ document.addEventListener('change', e => {
     S.rates[e.target.dataset.rate] = v; S.rates.updated = null; commit();
   }
   if (e.target.id === 'import-file' && e.target.files[0]) importBackup(e.target.files[0]);
+  if (e.target.id === 'h-acc') { histAcc = e.target.value; $('#h-body').innerHTML = historyBody(); }
+  if (e.target.id === 'h-cat') { histCat = e.target.value; $('#h-body').innerHTML = historyBody(); }
+});
+document.addEventListener('input', e => {
+  if (e.target.id === 'h-q' && S) { histQ = e.target.value; $('#h-body').innerHTML = historyBody(); }
 });
 
 /* ---------- Face ID (passkey + WebAuthn PRF) ----------
