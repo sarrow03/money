@@ -765,5 +765,15 @@ if (!window.isSecureContext || !crypto.subtle) {
   $('#lock-pw').hidden = true; $('#lock-btn').hidden = true;
 } else {
   showLock();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    // Новая версия пришла: на экране пароля перезагружаемся сразу, иначе — при следующей блокировке
+    const hadController = !!navigator.serviceWorker.controller;
+    let updateReady = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController) return;
+      if (!KEY) location.reload(); else updateReady = true;
+    });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && updateReady && !KEY) location.reload(); });
+    navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {});
+  }
 }
