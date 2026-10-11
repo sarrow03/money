@@ -846,7 +846,13 @@ function parseDateAny(str) {
 }
 async function inboxImport(file) {
   const seen = new Set(S.inboxSeen || []);
-  const items = (await file.text()).split(/\r?\n/).map(l => l.trim()).filter(l => l && !seen.has(l)).map(line => {
+  const lines = (await file.text()).split(/\r?\n/).map(l => l.trim()).filter(l => l && !seen.has(l));
+  // Строка «=;дата;сумма;карта» — выставить реальный остаток счёта после загрузки трат
+  const anchors = lines.filter(l => l.startsWith('=')).map(line => {
+    const p = line.split(';'), m = parseMoney(p[2] || '');
+    return isFinite(m.amount) && p[3] ? { line, card: p[3].trim(), value: m.neg ? -m.amount : m.amount } : null;
+  }).filter(Boolean);
+  const items = lines.filter(l => !l.startsWith('=')).map(line => {
     const p = line.split(';');
     if (p.length < 3) return null;
     // Формат: дата;сумма;продавец;карта[;категория]
@@ -856,20 +862,20 @@ async function inboxImport(file) {
     const m = parseMoney(p[1]);
     return m.amount > 0 ? { line, date: parseDateAny(p[0]), merchant, card, cat, ...m } : null;
   }).filter(Boolean);
-  if (!items.length) return toast('Новых трат нет');
-  inboxSheet(items);
+  if (!items.length && !anchors.length) return toast('Новых трат нет');
+  inboxSheet(items, anchors);
 }
 const mkey = i => (i.neg ? '+' : '') + i.merchant.toLowerCase(); // память категорий: траты и возвраты отдельно
-function inboxSheet(items) {
+function inboxSheet(items, anchors = []) {
   const accs = activeAccounts().filter(a => !isGoal(a));
-  const cards = [...new Set(items.map(i => i.card))];
+  const cards = [...new Set([...items.map(i => i.card), ...anchors.map(a => a.card)])];
   const def = (S.last && accById(S.last.accountId) ? S.last.accountId : accs[0].id);
   const accOpts = sel => accs.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)} ${SYM[a.currency]}</option>`).join('');
   const catFor = i => {
     const list = S.categories[i.neg ? 'income' : 'expense'], saved = list.includes(i.cat) ? i.cat : (S.merchantCats || {})[mkey(i)];
     return list.includes(saved) ? saved : list.includes('Другое') ? 'Другое' : list[0];
   };
-  const html = sheetHead(`Apple Pay · ${items.length}`) + `
+  const html = sheetHead(`Загрузка · ${items.length}`) + `
     <div class="plabel">Карта → счёт</div>
     <div class="form">${cards.map((c, ci) => `<label class="field"><span>${esc(c || 'Карта')}</span><select data-card="${ci}">${accOpts((S.cardMap || {})[c] || def)}</select></label>`).join('')}</div>
     <div class="plabel">Траты (снимите галочку, чтобы пропустить)</div>
@@ -878,6 +884,8 @@ function inboxSheet(items) {
       <div class="main"><div class="title">${esc(i.merchant)}</div><div class="meta">${fmtDay(i.date)}${i.card ? ' · ' + esc(i.card) : ''}</div></div>
       <div class="amt ${i.neg ? 'pos' : ''}">${i.neg ? '+' : '−'}${i.cur ? fmt(i.amount, i.cur) : String(i.amount).replace('.', ',')}
         <select class="mini" data-cat="${n}">${S.categories[i.neg ? 'income' : 'expense'].map(c => `<option ${c === catFor(i) ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div></div>`).join('')}</div>
+    ${anchors.length ? `<div class="plabel" style="margin-top:14px">После загрузки остатки станут</div>
+    <div class="list">${anchors.map(a => `<div class="row"><div class="main"><div class="title">${esc(a.card)}</div></div><div class="amt">${String(a.value).replace('.', ',')}</div></div>`).join('')}</div>` : ''}
     <button class="primary" id="i-save" style="margin-top:14px">Сохранить</button>
     <p class="note">Категории запоминаются по магазину — в следующий раз подставятся сами.</p>`;
   openSheet(html, s => {
@@ -901,7 +909,13 @@ function inboxSheet(items) {
         });
       });
       S.ops.push(...added);
-      S.inboxSeen = [...(S.inboxSeen || []), ...items.map(i => i.line)].slice(-3000);
+      // Остатки — после трат, чтобы итог совпал с банком
+      const bal = balances();
+      anchors.forEach(an => {
+        const a = accById(cardAcc[an.card]);
+        if (a) a.initial = Math.round((a.initial + an.value - bal[a.id]) * 100) / 100;
+      });
+      S.inboxSeen = [...(S.inboxSeen || []), ...items.map(i => i.line), ...anchors.map(a => a.line)].slice(-3000);
       closeSheet(); commit();
       toast(`Добавлено: ${added.length}`, () => { if (S) { S.ops = S.ops.filter(o => !added.includes(o)); commit(); } });
     });
