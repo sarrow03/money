@@ -849,10 +849,12 @@ async function inboxImport(file) {
   const items = (await file.text()).split(/\r?\n/).map(l => l.trim()).filter(l => l && !seen.has(l)).map(line => {
     const p = line.split(';');
     if (p.length < 3) return null;
-    const card = p.length >= 4 ? p[p.length - 1].trim() : '';
-    const merchant = p.slice(2, p.length >= 4 ? -1 : undefined).join(';').trim() || 'Без названия';
+    // Формат: дата;сумма;продавец;карта[;категория]
+    const cat = p.length >= 5 ? p[4].trim() : '';
+    const card = p.length >= 4 ? p[3].trim() : '';
+    const merchant = (p.length >= 4 ? p[2] : p.slice(2).join(';')).trim() || 'Без названия';
     const m = parseMoney(p[1]);
-    return m.amount > 0 ? { line, date: parseDateAny(p[0]), merchant, card, ...m } : null;
+    return m.amount > 0 ? { line, date: parseDateAny(p[0]), merchant, card, cat, ...m } : null;
   }).filter(Boolean);
   if (!items.length) return toast('Новых трат нет');
   inboxSheet(items);
@@ -864,7 +866,7 @@ function inboxSheet(items) {
   const def = (S.last && accById(S.last.accountId) ? S.last.accountId : accs[0].id);
   const accOpts = sel => accs.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)} ${SYM[a.currency]}</option>`).join('');
   const catFor = i => {
-    const list = S.categories[i.neg ? 'income' : 'expense'], saved = (S.merchantCats || {})[mkey(i)];
+    const list = S.categories[i.neg ? 'income' : 'expense'], saved = list.includes(i.cat) ? i.cat : (S.merchantCats || {})[mkey(i)];
     return list.includes(saved) ? saved : list.includes('Другое') ? 'Другое' : list[0];
   };
   const html = sheetHead(`Apple Pay · ${items.length}`) + `
