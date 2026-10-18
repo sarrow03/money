@@ -870,6 +870,13 @@ function inboxSheet(items, anchors = []) {
   const accs = activeAccounts().filter(a => !isGoal(a));
   const cards = [...new Set([...items.map(i => i.card), ...anchors.map(a => a.card)])];
   const def = (S.last && accById(S.last.accountId) ? S.last.accountId : accs[0].id);
+  // Карта → счёт: запомненное, иначе по названию («Revolut $» → Revolut в долларах, «Erste» → Erste)
+  const guessAcc = c => {
+    const saved = (S.cardMap || {})[c];
+    if (saved && accById(saved) && !accById(saved).archived) return saved;
+    const byName = accs.find(a => `${a.name} ${SYM[a.currency]}` === c) || accs.find(a => a.name === c);
+    return byName ? byName.id : def;
+  };
   const accOpts = sel => accs.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)} ${SYM[a.currency]}</option>`).join('');
   const catFor = i => {
     const list = S.categories[i.neg ? 'income' : 'expense'], saved = list.includes(i.cat) ? i.cat : (S.merchantCats || {})[mkey(i)];
@@ -877,7 +884,7 @@ function inboxSheet(items, anchors = []) {
   };
   const html = sheetHead(`Загрузка · ${items.length}`) + `
     <div class="plabel">Карта → счёт</div>
-    <div class="form">${cards.map((c, ci) => `<label class="field"><span>${esc(c || 'Карта')}</span><select data-card="${ci}">${accOpts((S.cardMap || {})[c] || def)}</select></label>`).join('')}</div>
+    <div class="form">${cards.map((c, ci) => `<label class="field"><span>${esc(c || 'Карта')}</span><select data-card="${ci}">${accOpts(guessAcc(c))}</select></label>`).join('')}</div>
     <div class="plabel">Траты (снимите галочку, чтобы пропустить)</div>
     <div class="list">${items.map((i, n) => `<div class="row">
       <button class="chk on" data-i="${n}">✓</button>
