@@ -910,10 +910,9 @@ function inboxSheet(items, anchors = []) {
       });
       S.ops.push(...added);
       // Остатки — после трат, чтобы итог совпал с банком
-      const bal = balances();
-      anchors.forEach(an => {
+      anchors.forEach(an => { // по очереди: следующий остаток того же счёта считается от уже исправленного
         const a = accById(cardAcc[an.card]);
-        if (a) a.initial = Math.round((a.initial + an.value - bal[a.id]) * 100) / 100;
+        if (a) a.initial = Math.round((a.initial + an.value - balances()[a.id]) * 100) / 100;
       });
       S.inboxSeen = [...(S.inboxSeen || []), ...items.map(i => i.line), ...anchors.map(a => a.line)].slice(-3000);
       closeSheet(); commit();
