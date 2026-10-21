@@ -62,6 +62,7 @@ function bigMoney(v, cur) {
 const CAT_ICONS = {
   'Продукты': '🛒', 'Кафе и рестораны': '🍽️', 'Транспорт': '🚇', 'Машина': '🚗', 'Жильё': '🏠',
   'Покупки': '🛍️', 'Развлечения': '🎬', 'Путешествия': '✈️', 'Подписки': '🔁', 'Здоровье': '💊',
+  'Связь': '📱', 'Одежда': '👕', 'Доставка еды': '🛵', 'Быт': '🧴', 'Парковка': '🅿️', 'От родителей': '👨‍👦',
   'Другое': '•', 'Неучтённое': '≈', 'Зарплата': '💼', 'Подработка': '🧾', 'Подарки': '🎁', 'Перевод': '⇄', 'Долг': '🤝',
 };
 const catIcon = c => CAT_ICONS[c] || esc((c || '•').slice(0, 1).toUpperCase());
@@ -81,11 +82,12 @@ function defaultState() {
     ops: [],
     recurring: [],
     categories: {
-      expense: ['Продукты', 'Кафе и рестораны', 'Транспорт', 'Машина', 'Жильё', 'Покупки', 'Развлечения', 'Путешествия', 'Подписки', 'Здоровье', 'Другое'],
-      income: ['Зарплата', 'Подработка', 'Подарки', 'Другое'],
+      expense: ['Продукты', 'Кафе и рестораны', 'Доставка еды', 'Транспорт', 'Машина', 'Парковка', 'Жильё', 'Быт', 'Покупки', 'Одежда', 'Развлечения', 'Путешествия', 'Подписки', 'Связь', 'Здоровье', 'Другое'],
+      income: ['Зарплата', 'Подработка', 'От родителей', 'Подарки', 'Другое'],
     },
     rates: { EUR: 50.72, USD: 44.68, updated: null }, // гривен за 1 единицу
     banksV2: true,
+    catsV2: true,
   };
 }
 
@@ -1417,6 +1419,39 @@ $('#lock-form').addEventListener('submit', async e => {
   } finally { btn.disabled = false; }
 });
 $('#lock-bio').addEventListener('click', unlockBio);
+// Разово: новые категории и перенос уже записанных трат по названию магазина.
+// Трогаем только траты, у которых ещё «старая» категория — ручные правки не перезаписываем.
+function migrateCategories() {
+  const addAfter = (type, cat, after) => {
+    const list = S.categories[type];
+    if (list.includes(cat)) return;
+    const i = list.indexOf(after);
+    list.splice(i >= 0 ? i + 1 : Math.max(0, list.length - 1), 0, cat);
+  };
+  addAfter('expense', 'Доставка еды', 'Кафе и рестораны');
+  addAfter('expense', 'Парковка', 'Машина');
+  addAfter('expense', 'Быт', 'Жильё');
+  addAfter('expense', 'Одежда', 'Покупки');
+  addAfter('expense', 'Связь', 'Подписки');
+  addAfter('income', 'От родителей', 'Подработка');
+  const rules = [
+    { re: /magenta/i, from: ['Подписки'], to: 'Связь' },
+    { re: /tom\s*&\s*mike|inditex|zara/i, from: ['Покупки'], to: 'Одежда' },
+    { re: /lieferando|wolt|foodora/i, from: ['Кафе и рестораны', 'Продукты'], to: 'Доставка еды' },
+    { re: /doho|^dm\b/i, from: ['Жильё', 'Здоровье'], to: 'Быт' },
+    { re: /p&r|parking|garage|парковк/i, from: ['Машина'], to: 'Парковка' },
+    { re: /maksym kurkov/i, from: ['Другое'], to: 'От родителей', income: true },
+  ];
+  for (const o of S.ops) {
+    const r = rules.find(x => x.re.test(o.note || '') && x.from.includes(o.category) && (o.type === 'income') === !!x.income);
+    if (r) o.category = r.to;
+  }
+  for (const k of Object.keys(S.merchantCats || {})) {
+    const r = rules.find(x => x.re.test(k.replace(/^\+/, '')) && x.from.includes(S.merchantCats[k]));
+    if (r) S.merchantCats[k] = r.to;
+  }
+  S.catsV2 = true;
+}
 async function unlock(pw) {
   const v = await kvGet('vault');
   const key = await deriveKey(pw, v.salt, v.iter);
@@ -1424,6 +1459,7 @@ async function unlock(pw) {
   KEY = key; SALT = v.salt; ITERS = v.iter;
   // Разовый переход на новый набор банков — только если ещё нет ни одной операции
   if (!S.created) { S.created = todayStr(); save(); }
+  if (!S.catsV2) { migrateCategories(); save(); }
   if (!S.banksV2) {
     if (!S.ops.length && !S.recurring.length) { const rates = S.rates; S = defaultState(); S.rates = rates; }
     S.banksV2 = true; save();
