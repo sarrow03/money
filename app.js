@@ -878,16 +878,19 @@ function inboxSheet(items, anchors = []) {
     const saved = (S.cardMap || {})[c];
     if (saved && accById(saved) && !accById(saved).archived) return saved;
     const byName = accs.find(a => `${a.name} ${SYM[a.currency]}` === c) || accs.find(a => a.name === c);
-    return byName ? byName.id : def;
+    return byName ? byName.id : newSpec(c) ? 'new' : def;
   };
-  const accOpts = sel => accs.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)} ${SYM[a.currency]}</option>`).join('');
+  // «Сенс кредитка ₴» без такого счёта → предложить создать новый счёт с этим названием и валютой
+  const newSpec = c => { const m = /^(.+)\s([₴$€])$/.exec(c || ''); return m ? { name: m[1].trim(), currency: Object.keys(SYM).find(k => SYM[k] === m[2]) } : null; };
+  const accOpts = (sel, c) => (newSpec(c) && !accs.some(a => `${a.name} ${SYM[a.currency]}` === c) ? `<option value="new" ${sel === 'new' ? 'selected' : ''}>+ Новый счёт: ${esc(c)}</option>` : '') +
+    accs.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.name)} ${SYM[a.currency]}</option>`).join('');
   const catFor = i => {
     const list = S.categories[i.neg ? 'income' : 'expense'], saved = list.includes(i.cat) ? i.cat : (S.merchantCats || {})[mkey(i)];
     return list.includes(saved) ? saved : list.includes('Другое') ? 'Другое' : list[0];
   };
   const html = sheetHead(`Загрузка · ${items.length}`) + `
     <div class="plabel">Карта → счёт</div>
-    <div class="form">${cards.map((c, ci) => `<label class="field"><span>${esc(c || 'Карта')}</span><select data-card="${ci}">${accOpts(guessAcc(c))}</select></label>`).join('')}</div>
+    <div class="form">${cards.map((c, ci) => `<label class="field"><span>${esc(c || 'Карта')}</span><select data-card="${ci}">${accOpts(guessAcc(c), c)}</select></label>`).join('')}</div>
     <div class="plabel">Траты (снимите галочку, чтобы пропустить)</div>
     <div class="list">${items.map((i, n) => `<div class="row">
       <button class="chk on" data-i="${n}">✓</button>
@@ -902,7 +905,11 @@ function inboxSheet(items, anchors = []) {
     $$('.chk', s).forEach(b => b.addEventListener('click', () => b.classList.toggle('on')));
     $('#i-save', s).addEventListener('click', () => {
       const cardAcc = {};
-      $$('[data-card]', s).forEach(el => { cardAcc[cards[+el.dataset.card]] = el.value; });
+      $$('[data-card]', s).forEach(el => {
+        const c = cards[+el.dataset.card];
+        if (el.value === 'new') { const sp = newSpec(c), a = { id: uid(), name: sp.name, currency: sp.currency, initial: 0 }; S.accounts.push(a); cardAcc[c] = a.id; }
+        else cardAcc[c] = el.value;
+      });
       S.cardMap = { ...(S.cardMap || {}), ...cardAcc };
       S.merchantCats ||= {};
       const added = [];
