@@ -852,7 +852,8 @@ async function inboxImport(file) {
   // Строка «=;дата;сумма;карта» — выставить реальный остаток счёта после загрузки трат
   const anchors = lines.filter(l => l.startsWith('=')).map(line => {
     const p = line.split(';'), m = parseMoney(p[2] || '');
-    return isFinite(m.amount) && p[3] ? { line, card: p[3].trim(), value: m.neg ? -m.amount : m.amount } : null;
+    // 5-е поле «копилка» — остаток копилки (создаётся, если её нет)
+    return isFinite(m.amount) && p[3] ? { line, card: p[3].trim(), value: m.neg ? -m.amount : m.amount, cur: m.cur, goal: /копилка/i.test(p[4] || '') } : null;
   }).filter(Boolean);
   const items = lines.filter(l => !l.startsWith('=')).map(line => {
     const p = line.split(';');
@@ -870,7 +871,7 @@ async function inboxImport(file) {
 const mkey = i => (i.neg ? '+' : '') + i.merchant.toLowerCase(); // память категорий: траты и возвраты отдельно
 function inboxSheet(items, anchors = []) {
   const accs = activeAccounts().filter(a => !isGoal(a));
-  const cards = [...new Set([...items.map(i => i.card), ...anchors.map(a => a.card)])];
+  const cards = [...new Set([...items.map(i => i.card), ...anchors.filter(a => !a.goal).map(a => a.card)])];
   const def = (S.last && accById(S.last.accountId) ? S.last.accountId : accs[0].id);
   // Карта → счёт: запомненное, иначе по названию («Revolut $» → Revolut в долларах, «Erste» → Erste)
   const guessAcc = c => {
@@ -894,7 +895,7 @@ function inboxSheet(items, anchors = []) {
       <div class="amt ${i.neg ? 'pos' : ''}">${i.neg ? '+' : '−'}${i.cur ? fmt(i.amount, i.cur) : String(i.amount).replace('.', ',')}
         <select class="mini" data-cat="${n}">${S.categories[i.neg ? 'income' : 'expense'].map(c => `<option ${c === catFor(i) ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div></div>`).join('')}</div>
     ${anchors.length ? `<div class="plabel" style="margin-top:14px">После загрузки остатки станут</div>
-    <div class="list">${anchors.map(a => `<div class="row"><div class="main"><div class="title">${esc(a.card)}</div></div><div class="amt">${String(a.value).replace('.', ',')}</div></div>`).join('')}</div>` : ''}
+    <div class="list">${anchors.map(a => `<div class="row"><div class="main"><div class="title">${a.goal ? '🎯 ' : ''}${esc(a.card)}</div></div><div class="amt">${String(a.value).replace('.', ',')}</div></div>`).join('')}</div>` : ''}
     <button class="primary" id="i-save" style="margin-top:14px">Сохранить</button>
     <p class="note">Категории запоминаются по магазину — в следующий раз подставятся сами.</p>`;
   openSheet(html, s => {
@@ -920,7 +921,11 @@ function inboxSheet(items, anchors = []) {
       S.ops.push(...added);
       // Остатки — после трат, чтобы итог совпал с банком
       anchors.forEach(an => { // по очереди: следующий остаток того же счёта считается от уже исправленного
-        const a = accById(cardAcc[an.card]);
+        let a;
+        if (an.goal) {
+          a = S.accounts.find(x => isGoal(x) && !x.archived && x.name === an.card);
+          if (!a) { a = { id: uid(), name: an.card, currency: an.cur || 'UAH', initial: 0, goal: 0 }; S.accounts.push(a); }
+        } else a = accById(cardAcc[an.card]);
         if (a) a.initial = Math.round((a.initial + an.value - balances()[a.id]) * 100) / 100;
       });
       S.inboxSeen = [...(S.inboxSeen || []), ...items.map(i => i.line), ...anchors.map(a => a.line)].slice(-3000);
